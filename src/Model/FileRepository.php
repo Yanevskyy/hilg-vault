@@ -1,0 +1,346 @@
+<?php
+/**
+ * File records.
+ *
+ * A file exists in two stages. It is registered as `pending` before the browser
+ * starts uploading, and promoted to `available` only after the bucket confirms
+ * the object is really there and reports its size. Nothing that failed halfway
+ * ever appears in a listing, and the recorded size is the bucket's answer
+ * rather than the browser's claim.
+ *
+ * @package HilgVault
+ */
+
+declare(strict_types=1);
+
+namespace ClarityWeb\HilgVault\Model;
+
+use ClarityWeb\HilgVault\Install\Schema;
+
+defined('ABSPATH') || exit;
+
+final class FileRepository
+{
+    public const STATUS_PENDING   = 'pending';
+    public const STATUS_AVAILABLE = 'available';
+    public const STATUS_FAILED    = 'failed';
+
+    /**
+     * Extensions that are never accepted, whatever the upload claims to be.
+     * A file library for a public body has no reason to host executable code.
+     */
+    private const BLOCKED_EXTENSIONS = [
+        'php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'phps', 'phar',
+        'exe', 'com', 'bat', 'cmd', 'msi', 'scr', 'cpl', 'jar',
+        'sh', 'bash', 'zsh', 'ps1', 'psm1', 'vbs', 'js', 'jse', 'wsf', 'hta',
+        'htaccess', 'htpasswd',
+    ];
+
+    /**
+     * Registers an intent to upload and returns the row plus the object key
+     * the browser should write to.
+     *
+     * @return array{id:int,object_key:string}|\WP_Error
+     */
+    public static function registerPending(
+        int $folderId,
+        string $filename,
+        int $sizeBytes = 0,
+        ?string $mimeType = null,
+    ): array|\WP_Error {
+        global $wpdb;
+
+        $filename = self::sanitiseFilename($filename);
+
+        if ($filename === '') {
+            return new \WP_Error('bad_filename', __('That file name cannot be used.', 'hilg-vault'));
+        }
+
+        $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
+
+        if ($extension !== '' && in_array($extension, self::BLOCKED_EXTENSIONS, true)) {
+            return new \WP_Error(
+                'blocked_type',
+                sprintf(
+                    /* translators: %s: file extension. */
+                    __('Files of type .%s cannot be uploaded.', 'hilg-vault'),
+                    $extension
+                )
+            );
+        }
+
+        $maxBytes = self::maxUploadBytes();
+
+        if ($maxBytes > 0 && $sizeBytes > $maxBytes) {
+            return new \WP_Error(
+                'too_large',
+                sprintf(
+                    /* translators: %s: human readable size limit. */
+                    __('That file is larger than the %s limit.', 'hilg-vault'),
+                    size_format($maxBytes)
+                )
+            );
+        }
+
+        $objectKey = self::buildObjectKey($folderId, $extension);
+
+        $inserted = $wpdb->insert(
+            Schema::tableFiles(),
+            [
+                'folder_id'   => $folderId,
+                'name'        => $filename,
+                'object_key'  => $objectKey,
+                'size_bytes'  => max(0, $sizeBytes),
+                'mime_type'   => $mimeType,
+                'extension'   => $extension !== '' ? $extension : null,
+                'status'      => self::STATUS_PENDING,
+                'uploaded_by' => get_current_user_id() ?: null,
+            ],
+            ['%d', '%s', '%s', '%d', '%s', '%s', '%s', '%d']
+        );
+
+        if ($inserted === false) {
+            return new \WP_Error('db_error', __('The file could not be registered.', 'hilg-vault'));
+        }
+
+        return ['id' => (int) $wpdb->insert_id, 'object_key' => $objectKey];
+    }
+
+    public static function attachUploadId(int $fileId, string $uploadId): void
+    {
+        global $wpdb;
+
+        $wpdb->update(
+            Schema::tableFiles(),
+            ['upload_id' => $uploadId],
+            ['id' => $fileId],
+            ['%s'],
+            ['%d']
+        );
+    }
+
+    /**
+     * Promotes a pending row once the object is confirmed in the bucket.
+     */
+    public static function markAvailable(int $fileId, int $sizeBytes, ?string $checksum = null): void
+    {
+        global $wpdb;
+
+        $wpdb->update(
+            Schema::tableFiles(),
+            [
+                'status'     => self::STATUS_AVAILABLE,
+                'size_bytes' => $sizeBytes,
+                'checksum'   => $checksum,
+                'upload_id'  => null,
+            ],
+            ['id' => $fileId],
+            ['%s', '%d', '%s', '%s'],
+            ['%d']
+        );
+    }
+
+    public static function markFailed(int $fileId): void
+    {
+        global $wpdb;
+
+        $wpdb->update(
+            Schema::tableFiles(),
+            ['status' => self::STATUS_FAILED],
+            ['id' => $fileId],
+            ['%s'],
+            ['%d']
+        );
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    public static function find(int $fileId): ?array
+    {
+        global $wpdb;
+
+        $table = Schema::tableFiles();
+
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT * FROM {$table} WHERE id = %d AND deleted_at IS NULL", $fileId),
+            ARRAY_A
+        );
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    public static function listByFolder(int $folderId, string $search = '', string $orderBy = 'name'): array
+    {
+        global $wpdb;
+
+        $table = Schema::tableFiles();
+
+        $allowedOrder = [
+            'name'    => 'name ASC',
+            'size'    => 'size_bytes DESC',
+            'newest'  => 'created_at DESC',
+            'oldest'  => 'created_at ASC',
+            'type'    => 'extension ASC, name ASC',
+        ];
+
+        $order = $allowedOrder[$orderBy] ?? $allowedOrder['name'];
+
+        if ($search !== '') {
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT id, name, size_bytes, mime_type, extension, download_count, created_at
+                     FROM {$table}
+                     WHERE folder_id = %d AND deleted_at IS NULL AND status = %s AND name LIKE %s
+                     ORDER BY {$order}",
+                    $folderId,
+                    self::STATUS_AVAILABLE,
+                    '%' . $wpdb->esc_like($search) . '%'
+                ),
+                ARRAY_A
+            );
+        } else {
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT id, name, size_bytes, mime_type, extension, download_count, created_at
+                     FROM {$table}
+                     WHERE folder_id = %d AND deleted_at IS NULL AND status = %s
+                     ORDER BY {$order}",
+                    $folderId,
+                    self::STATUS_AVAILABLE
+                ),
+                ARRAY_A
+            );
+        }
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    public static function rename(int $fileId, string $newName): true|\WP_Error
+    {
+        $newName = self::sanitiseFilename($newName);
+
+        if ($newName === '') {
+            return new \WP_Error('bad_filename', __('That file name cannot be used.', 'hilg-vault'));
+        }
+
+        global $wpdb;
+
+        // Only the database row changes. The object key stays fixed, so
+        // renaming a ten gigabyte file costs one UPDATE instead of a copy.
+        $wpdb->update(
+            Schema::tableFiles(),
+            ['name' => $newName],
+            ['id' => $fileId],
+            ['%s'],
+            ['%d']
+        );
+
+        return true;
+    }
+
+    public static function softDelete(int $fileId): void
+    {
+        global $wpdb;
+
+        $wpdb->update(
+            Schema::tableFiles(),
+            ['deleted_at' => current_time('mysql')],
+            ['id' => $fileId],
+            ['%s'],
+            ['%d']
+        );
+    }
+
+    public static function restore(int $fileId): void
+    {
+        global $wpdb;
+
+        $wpdb->update(
+            Schema::tableFiles(),
+            ['deleted_at' => null],
+            ['id' => $fileId],
+            ['%s'],
+            ['%d']
+        );
+    }
+
+    /**
+     * Pending rows older than a day are abandoned uploads. Cleaning them keeps
+     * the table honest and lets the bucket lifecycle rule reclaim the parts.
+     *
+     * @return int Number of rows cleaned.
+     */
+    public static function purgeStalePending(int $olderThanHours = 24): int
+    {
+        global $wpdb;
+
+        $table = Schema::tableFiles();
+
+        return (int) $wpdb->query(
+            $wpdb->prepare(
+                "UPDATE {$table} SET status = %s
+                 WHERE status = %s AND created_at < DATE_SUB(NOW(), INTERVAL %d HOUR)",
+                self::STATUS_FAILED,
+                self::STATUS_PENDING,
+                $olderThanHours
+            )
+        );
+    }
+
+    /**
+     * Object keys are random and permanent. They never contain the display
+     * name, which removes path traversal, name collisions, and the need to
+     * copy an object when a file is renamed.
+     */
+    private static function buildObjectKey(int $folderId, string $extension): string
+    {
+        $random = bin2hex(random_bytes(16));
+        $suffix = $extension !== '' ? '.' . $extension : '';
+
+        return sprintf('folders/%d/%s/%s%s', $folderId, gmdate('Y/m'), $random, $suffix);
+    }
+
+    /**
+     * Cleans a display name without mangling it.
+     *
+     * sanitize_file_name() is deliberately not used here. It exists to make a
+     * name safe as a path on disk, which is why it turns spaces into hyphens.
+     * Nothing in this plugin uses the name as a path: the object key is random
+     * and the name is only ever rendered as text. So "Annual Report 2026.pdf"
+     * stays exactly that, and the parts that could actually cause harm, path
+     * separators and control characters, are removed.
+     */
+    private static function sanitiseFilename(string $filename): string
+    {
+        $filename = trim($filename);
+
+        // Strip any directory component, including Windows separators.
+        $filename = (string) preg_replace('#^.*[\\\\/]#', '', $filename);
+
+        // Control characters, including newlines that would break a header.
+        $filename = (string) preg_replace('/[\x00-\x1F\x7F]/u', '', $filename);
+
+        // Leading dots would create a hidden file and add nothing useful.
+        $filename = ltrim($filename, '.');
+
+        // Collapse runs of whitespace so the name stays on one visual line.
+        $filename = (string) preg_replace('/\s+/u', ' ', $filename);
+
+        return trim(mb_substr($filename, 0, 200));
+    }
+
+    /**
+     * Zero means no ceiling. The default is deliberately generous because the
+     * upload does not pass through PHP, so the usual server limits do not apply.
+     */
+    public static function maxUploadBytes(): int
+    {
+        $configured = (int) get_option('hilg_vault_max_upload_bytes', 0);
+
+        return (int) apply_filters('hilg_vault_max_upload_bytes', $configured);
+    }
+}

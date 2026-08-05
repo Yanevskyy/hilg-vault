@@ -1,0 +1,285 @@
+/**
+ * HILG Vault front end styles.
+ *
+ * Constraints this file is written against, all of them requirements rather
+ * than preferences for a public sector site:
+ *   - text contrast at or above 4.5:1 on every state,
+ *   - visible focus that does not rely on colour alone,
+ *   - touch targets of at least 44px,
+ *   - no layout shift on hover,
+ *   - motion respects prefers-reduced-motion,
+ *   - readable in a forced colours (high contrast) mode.
+ */
+
+.hilg-vault {
+    --hv-text: #1a1a1a;
+    --hv-muted: #55595c;
+    --hv-line: #d8dadc;
+    --hv-surface: #ffffff;
+    --hv-hover: #f2f5f7;
+    --hv-accent: #0b5c74;
+    --hv-focus: #b8280e;
+    --hv-radius: 10px;
+
+    color: var(--hv-text);
+    font-size: 1rem;
+    line-height: 1.5;
+}
+
+.hilg-vault__title {
+    margin: 0 0 0.75rem;
+    font-size: 1.35rem;
+}
+
+/* Breadcrumbs ---------------------------------------------------------- */
+
+.hilg-vault__breadcrumbs ol {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0 0 1rem;
+    padding: 0;
+    list-style: none;
+    font-size: 0.9rem;
+}
+
+.hilg-vault__breadcrumbs li + li::before {
+    content: "/";
+    margin-right: 0.35rem;
+    color: var(--hv-muted);
+}
+
+.hilg-vault__breadcrumbs a {
+    color: var(--hv-accent);
+}
+
+.hilg-vault__breadcrumbs [aria-current="page"] {
+    color: var(--hv-muted);
+}
+
+/* Search --------------------------------------------------------------- */
+
+.hilg-vault__search {
+    margin-bottom: 1rem;
+}
+
+.hilg-vault__search-input {
+    width: 100%;
+    max-width: 22rem;
+    min-height: 44px;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--hv-line);
+    border-radius: var(--hv-radius);
+    background: var(--hv-surface);
+    color: var(--hv-text);
+    font-size: 1rem;
+}
+
+/* Listing -------------------------------------------------------------- */
+
+.hilg-vault__items {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.hilg-vault__items--grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 0.75rem;
+}
+
+.hilg-vault__items--list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.hilg-vault__link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 44px;
+    padding: 0.85rem;
+    border: 1px solid var(--hv-line);
+    border-radius: var(--hv-radius);
+    background: var(--hv-surface);
+    color: inherit;
+    text-decoration: none;
+    /* Border width never changes on hover, so nothing reflows. */
+    transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.hilg-vault__items--grid .hilg-vault__link {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+    min-height: 116px;
+}
+
+.hilg-vault__link:hover {
+    background: var(--hv-hover);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+}
+
+.hilg-vault__link:focus-visible {
+    outline: 3px solid var(--hv-focus);
+    outline-offset: 2px;
+}
+
+.hilg-vault__icon {
+    display: inline-flex;
+    color: var(--hv-accent);
+}
+
+.hilg-vault__item--file .hilg-vault__icon {
+    color: var(--hv-muted);
+}
+
+.hilg-vault__item.is-locked .hilg-vault__icon {
+    color: #8a5300;
+}
+
+.hilg-vault__name {
+    font-weight: 600;
+    /* Long file names wrap instead of overflowing the card. */
+    overflow-wrap: anywhere;
+}
+
+.hilg-vault__meta {
+    color: var(--hv-muted);
+    font-size: 0.85rem;
+}
+
+.hilg-vault__link[aria-busy="true"] .hilg-vault__meta::after {
+    content: " ...";
+}
+
+/* Password gate -------------------------------------------------------- */
+
+.hilg-vault__password {
+    max-width: 24rem;
+    padding: 1.25rem;
+    border: 1px solid var(--hv-line);
+    border-radius: var(--hv-radius);
+    background: var(--hv-surface);
+}
+
+.hilg-vault__password-intro {
+    margin-top: 0;
+    color: var(--hv-muted);
+}
+
+.hilg-vault__password label {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-weight: 600;
+}
+
+.hilg-vault__password input {
+    width: 100%;
+    min-height: 44px;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--hv-line);
+    border-radius: var(--hv-radius);
+    font-size: 1rem;
+}
+
+.hilg-vault__button {
+    min-height: 44px;
+    padding: 0.6rem 1.25rem;
+    border: 0;
+    border-radius: var(--hv-radius);
+    background: var(--hv-accent);
+    color: #fff;
+    font-size: 1rem;
+    cursor: pointer;
+}
+
+.hilg-vault__button:focus-visible {
+    outline: 3px solid var(--hv-focus);
+    outline-offset: 2px;
+}
+
+.hilg-vault__password-error {
+    margin: 0.75rem 0 0;
+    /* Colour is not the only signal: the text itself states the problem. */
+    color: #8a1c08;
+    font-weight: 600;
+}
+
+/* Status and notices --------------------------------------------------- */
+
+.hilg-vault__status {
+    margin: 0 0 0.5rem;
+    min-height: 1.25rem;
+    color: var(--hv-muted);
+    font-size: 0.85rem;
+}
+
+.hilg-vault__notice {
+    padding: 1rem;
+    border: 1px dashed var(--hv-line);
+    border-radius: var(--hv-radius);
+    color: var(--hv-muted);
+}
+
+.hilg-vault.is-loading .hilg-vault__items {
+    opacity: 0.55;
+}
+
+/* Screen reader only text, matching the WordPress class name. */
+.hilg-vault .screen-reader-text {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Dark scheme ---------------------------------------------------------- */
+
+@media (prefers-color-scheme: dark) {
+    .hilg-vault {
+        --hv-text: #f1f3f4;
+        --hv-muted: #b3b8bc;
+        --hv-line: #3a4045;
+        --hv-surface: #1c2124;
+        --hv-hover: #262c30;
+        --hv-accent: #7cc7dd;
+        --hv-focus: #ff9d85;
+    }
+
+    .hilg-vault__button {
+        color: #10262d;
+    }
+
+    .hilg-vault__password-error {
+        color: #ff9d85;
+    }
+}
+
+/* Forced colours (Windows high contrast) ------------------------------- */
+
+@media (forced-colors: active) {
+    .hilg-vault__link {
+        border: 1px solid CanvasText;
+    }
+
+    .hilg-vault__link:focus-visible {
+        outline: 3px solid Highlight;
+    }
+}
+
+/* Motion --------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+    .hilg-vault__link {
+        transition: none;
+    }
+}

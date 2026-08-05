@@ -1,0 +1,181 @@
+/**
+ * Learning module output.
+ *
+ * Same accessibility floor as the vault component: 4.5:1 contrast, visible
+ * focus, no colour-only signals, readable in dark scheme and forced colours.
+ */
+
+.hilg-lms {
+    --lms-ink: #1a1d20;
+    --lms-muted: #55595c;
+    --lms-line: #d8dadc;
+    --lms-surface: #ffffff;
+    --lms-accent: #0b5c74;
+    --lms-focus: #b8280e;
+    --lms-warn-bg: #fdf6e3;
+    --lms-warn-ink: #6b4b00;
+    --lms-warn-line: #d9bf7a;
+
+    margin: 32px 0;
+    padding: 24px;
+    border: 1px solid var(--lms-line);
+    border-radius: 10px;
+    background: var(--lms-surface);
+    color: var(--lms-ink);
+}
+
+.hilg-lms__eyebrow {
+    margin: 0 0 4px;
+    color: var(--lms-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hilg-lms__title {
+    margin: 0 0 8px;
+    font-size: 1.35rem;
+    line-height: 1.25;
+}
+
+.hilg-lms__summary {
+    margin: 0 0 8px;
+    max-width: 62ch;
+    color: var(--lms-muted);
+}
+
+.hilg-lms__meta {
+    margin: 0 0 14px;
+    color: var(--lms-muted);
+    font-size: 0.88rem;
+}
+
+.hilg-lms__cta {
+    display: inline-block;
+    min-height: 44px;
+    padding: 11px 20px;
+    border-radius: 8px;
+    background: var(--lms-accent);
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.hilg-lms__cta:hover {
+    background: #084757;
+}
+
+.hilg-lms__cta:focus-visible,
+.hilg-lms__lessons a:focus-visible {
+    outline: 3px solid var(--lms-focus);
+    outline-offset: 2px;
+}
+
+/* Lessons ------------------------------------------------------------ */
+
+.hilg-lms__lessons {
+    margin: 20px 0 0;
+    padding: 0;
+    border-top: 1px solid var(--lms-line);
+    list-style: none;
+    counter-reset: hilg-lesson;
+}
+
+.hilg-lms__lesson {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: baseline;
+    gap: 6px 12px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--lms-line);
+    counter-increment: hilg-lesson;
+}
+
+.hilg-lms__lesson::before {
+    content: counter(hilg-lesson);
+    grid-row: 1;
+    min-width: 24px;
+    color: var(--lms-muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.9rem;
+}
+
+.hilg-lms__lesson > a,
+.hilg-lms__lesson-title {
+    grid-column: 2;
+    font-weight: 600;
+}
+
+.hilg-lms__lesson-meta {
+    grid-column: 3;
+    color: var(--lms-muted);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.hilg-lms__lesson-summary {
+    grid-column: 2 / -1;
+    margin: 2px 0 0;
+    color: var(--lms-muted);
+    font-size: 0.92rem;
+}
+
+@media (max-width: 520px) {
+    .hilg-lms__lesson {
+        grid-template-columns: auto 1fr;
+    }
+
+    .hilg-lms__lesson-meta {
+        grid-column: 2;
+    }
+}
+
+/* Notices ------------------------------------------------------------ */
+
+/* The stale notice carries its meaning in words, not only in colour. */
+.hilg-lms__stale {
+    margin: 18px 0 0;
+    padding: 12px 14px;
+    border: 1px solid var(--lms-warn-line);
+    border-radius: 8px;
+    background: var(--lms-warn-bg);
+    color: var(--lms-warn-ink);
+    font-size: 0.9rem;
+}
+
+.hilg-lms__notice {
+    padding: 12px 14px;
+    border: 1px dashed var(--lms-line);
+    border-radius: 8px;
+    color: var(--lms-muted);
+}
+
+@media (prefers-color-scheme: dark) {
+    .hilg-lms {
+        --lms-ink: #f1f3f4;
+        --lms-muted: #b3b8bc;
+        --lms-line: #3a4045;
+        --lms-surface: #1c2124;
+        --lms-accent: #7cc7dd;
+        --lms-focus: #ff9d85;
+        --lms-warn-bg: #2c2418;
+        --lms-warn-ink: #f0d9a4;
+        --lms-warn-line: #6b5426;
+    }
+
+    .hilg-lms__cta {
+        color: #10262d;
+    }
+
+    .hilg-lms__cta:hover {
+        background: #a8dcec;
+    }
+}
+
+@media (forced-colors: active) {
+    .hilg-lms,
+    .hilg-lms__stale {
+        border: 1px solid CanvasText;
+    }
+}
