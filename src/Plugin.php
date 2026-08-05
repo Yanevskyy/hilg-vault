@@ -49,6 +49,8 @@ final class Plugin
         Lms\Catalogue::register();
         Lms\LmsRenderer::register();
         Lms\LmsSettingsPage::register();
+
+        Members\MemberArea::register();
     }
 
     public function onInit(): void

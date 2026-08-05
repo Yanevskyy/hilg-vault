@@ -33,12 +33,22 @@ final class AdminPage
         add_action('admin_enqueue_scripts', [self::class, 'enqueue']);
     }
 
+    /**
+     * The admin screen requires hilg_manage_vault, not hilg_vault_access.
+     *
+     * The two are deliberately different. hilg_vault_access means "may reach
+     * shared material through the site" and is held by external network
+     * members. hilg_manage_vault means "may administer the library" and belongs
+     * to staff. Guarding this screen with the first would put partner
+     * organisations inside wp-admin, which is an interface built for editors
+     * and a surface external contributors have no reason to touch.
+     */
     public static function addMenu(): void
     {
         add_menu_page(
             __('File Vault', 'hilg-vault'),
             __('File Vault', 'hilg-vault'),
-            'hilg_vault_access',
+            'hilg_manage_vault',
             self::SLUG,
             [self::class, 'render'],
             'dashicons-portfolio',
@@ -128,7 +138,7 @@ final class AdminPage
 
     public static function render(): void
     {
-        if (!current_user_can('hilg_vault_access')) {
+        if (!current_user_can('hilg_manage_vault')) {
             wp_die(esc_html__('You do not have permission to open the file vault.', 'hilg-vault'));
         }
 

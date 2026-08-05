@@ -1,0 +1,259 @@
+/**
+ * Network member area.
+ *
+ * Same accessibility floor as the rest of the plugin: 4.5:1 contrast, visible
+ * focus, 44px targets, status carried in words rather than colour alone.
+ */
+
+.hilg-member {
+    --hm-ink: #1a1d20;
+    --hm-muted: #55595c;
+    --hm-line: #d8dadc;
+    --hm-surface: #ffffff;
+    --hm-accent: #0b5c74;
+    --hm-focus: #b8280e;
+    --hm-ok-bg: #e7f4ea;
+    --hm-ok-ink: #14532d;
+    --hm-err-bg: #fdeceb;
+    --hm-err-ink: #8a1c08;
+
+    color: var(--hm-ink);
+}
+
+.hilg-member__section {
+    margin: 0 0 40px;
+    padding: 24px;
+    border: 1px solid var(--hm-line);
+    border-radius: 10px;
+    background: var(--hm-surface);
+}
+
+.hilg-member__section h2 {
+    margin: 0 0 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--hm-line);
+    font-size: 1.15rem;
+}
+
+/* Forms -------------------------------------------------------------- */
+
+.hilg-member__form p {
+    margin: 0 0 16px;
+}
+
+.hilg-member__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 16px;
+}
+
+@media (max-width: 560px) {
+    .hilg-member__grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.hilg-member__form label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    font-size: 0.92rem;
+}
+
+.hilg-member__form input[type="text"],
+.hilg-member__form input[type="url"],
+.hilg-member__form textarea {
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid var(--hm-line);
+    border-radius: 8px;
+    background: var(--hm-surface);
+    color: var(--hm-ink);
+    font: inherit;
+}
+
+.hilg-member__form textarea {
+    min-height: 120px;
+    resize: vertical;
+}
+
+.hilg-member__form input:focus-visible,
+.hilg-member__form textarea:focus-visible,
+.hilg-member__button:focus-visible,
+.hilg-member__link:focus-visible,
+.hilg-member a:focus-visible {
+    outline: 3px solid var(--hm-focus);
+    outline-offset: 2px;
+}
+
+.hilg-member__button {
+    display: inline-block;
+    min-height: 44px;
+    padding: 11px 22px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--hm-accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.hilg-member__button:hover {
+    background: #084757;
+}
+
+.hilg-member__link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--hm-accent);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.hilg-member__link--danger {
+    color: #8a1c08;
+}
+
+.hilg-member__hint,
+.hilg-member__notice {
+    color: var(--hm-muted);
+    font-size: 0.92rem;
+}
+
+/* Flash messages ----------------------------------------------------- */
+
+.hilg-member__flash {
+    margin: 0 0 24px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+}
+
+.hilg-member__flash--success {
+    border: 1px solid #9cc9a9;
+    background: var(--hm-ok-bg);
+    color: var(--hm-ok-ink);
+}
+
+.hilg-member__flash--error {
+    border: 1px solid #e3a99f;
+    background: var(--hm-err-bg);
+    color: var(--hm-err-ink);
+}
+
+/* Content list ------------------------------------------------------- */
+
+.hilg-member__list,
+.hilg-member__folders {
+    margin: 24px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.hilg-member__item {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--hm-line);
+}
+
+@media (max-width: 560px) {
+    .hilg-member__item {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+}
+
+.hilg-member__item-title {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+/* Status reads as a word, so it survives greyscale and colour blindness. */
+.hilg-member__status {
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.hilg-member__status--publish {
+    background: var(--hm-ok-bg);
+    color: var(--hm-ok-ink);
+}
+
+.hilg-member__status--pending {
+    background: #fdf6e3;
+    color: #6b4b00;
+}
+
+.hilg-member__status--draft {
+    background: #eef0f1;
+    color: #44494d;
+}
+
+.hilg-member__item-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.hilg-member__inline {
+    display: inline;
+}
+
+.hilg-member__folders li {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--hm-line);
+}
+
+.hilg-member__folders a {
+    color: var(--hm-accent);
+    font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+    .hilg-member {
+        --hm-ink: #f1f3f4;
+        --hm-muted: #b3b8bc;
+        --hm-line: #3a4045;
+        --hm-surface: #1c2124;
+        --hm-accent: #7cc7dd;
+        --hm-focus: #ff9d85;
+        --hm-ok-bg: #17301f;
+        --hm-ok-ink: #a7e0b8;
+        --hm-err-bg: #33201d;
+        --hm-err-ink: #ffb3a4;
+    }
+
+    .hilg-member__button {
+        color: #10262d;
+    }
+
+    .hilg-member__status--pending {
+        background: #2c2418;
+        color: #f0d9a4;
+    }
+
+    .hilg-member__status--draft {
+        background: #262b2e;
+        color: #c8cdd1;
+    }
+}
+
+@media (forced-colors: active) {
+    .hilg-member__section,
+    .hilg-member__flash {
+        border: 1px solid CanvasText;
+    }
+}
