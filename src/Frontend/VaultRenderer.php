@@ -181,6 +181,11 @@ final class VaultRenderer
 
         // Password gate takes over the whole component when it applies.
         if ($folder !== null && !AccessPolicy::canViewFolder($folderId)) {
+            // The trail stays, otherwise someone arriving on a closed folder
+            // from a link has no way back to the material they can open, and
+            // the browser's back button becomes the only exit.
+            echo self::backToRoot(); // phpcs:ignore WordPress.Security.EscapeOutput
+
             if (AccessPolicy::effectiveMode($folder) === AccessPolicy::MODE_PASSWORD) {
                 echo self::passwordForm($folderId); // phpcs:ignore WordPress.Security.EscapeOutput
             } else {
@@ -376,6 +381,21 @@ final class VaultRenderer
             esc_attr($instanceId),
             esc_html__('Search files in this folder', 'hilg-vault'),
             esc_attr__('Search files', 'hilg-vault')
+        );
+    }
+
+    /**
+     * Route back to the top of the library from a folder the visitor cannot
+     * open. Rendered as the same breadcrumb component so the page does not
+     * change shape depending on whether access was granted.
+     */
+    private static function backToRoot(): string
+    {
+        return sprintf(
+            '<nav class="hilg-vault__breadcrumbs" aria-label="%1$s"><ol><li><a href="%2$s" data-folder="0">%3$s</a></li></ol></nav>',
+            esc_attr__('Folder path', 'hilg-vault'),
+            esc_url(get_permalink() ?: home_url('/')),
+            esc_html__('All files', 'hilg-vault')
         );
     }
 
