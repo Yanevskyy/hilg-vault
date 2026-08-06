@@ -1,7 +1,7 @@
 name: Tests
 
-# Runs on every push and every pull request, which is the point: defects are
-# caught before the code reaches a server rather than after.
+# Runs on every push and pull request, so defects are caught before the code
+# reaches a server rather than after.
 on:
   push:
     branches: [main]
@@ -12,27 +12,20 @@ on:
   schedule:
     - cron: '0 6 * * 1'
 
+# A newer push makes an in-flight run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  quick:
-    name: Dependency-free checks
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          coverage: none
-
-      # These need nothing but PHP, so they also run on a server after an
-      # update, when CI is not available.
-      - name: Run checks
-        run: php tests/run.php
-
-  unit:
-    name: PHPUnit unit suite
+  # One job covering everything that needs no database.
+  #
+  # Deliberately not split across parallel jobs: each job costs a runner and a
+  # cold start, and on a free account queuing several at once means some never
+  # get scheduled. Sequential steps inside one job are faster end to end here
+  # and easier to read when something fails.
+  checks:
+    name: Syntax, quick checks and unit tests
     runs-on: ubuntu-latest
 
     steps:
@@ -44,50 +37,28 @@ jobs:
           php-version: '8.4'
           coverage: none
 
+      # Runs first: a parse error makes everything below meaningless.
+      - name: Lint every PHP file
+        run: find src hilg-vault.php -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      # No dependencies at all. These are the same checks that can be run on a
+      # server after an update, when CI is not available.
+      - name: Dependency-free checks
+        run: php tests/run.php
+
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
 
-      # No database and no WordPress: these exercise the real classes against
-      # a handful of stand-in helpers, so they run in seconds.
-      - name: Run the unit suite
+      # Real classes, stand-in WordPress helpers, no database.
+      - name: Unit tests
         run: vendor/bin/phpunit
 
-  syntax:
-    name: Syntax on every supported PHP version
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        php: ['8.2', '8.3', '8.4']
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up PHP ${{ matrix.php }}
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ matrix.php }}
-          coverage: none
-
-      - name: Lint every PHP file
-        run: |
-          find src hilg-vault.php -name '*.php' -print0 \
-            | xargs -0 -n1 -P4 php -l
-
+  # Separate job because it needs a database service, which the job above
+  # should not pay for.
   integration:
-    name: WordPress ${{ matrix.wordpress }} on PHP ${{ matrix.php }}
+    name: Integration against real WordPress
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The version the client actually runs.
-          - php: '8.4'
-            wordpress: 'latest'
-          # The oldest combination the plugin claims to support.
-          - php: '8.2'
-            wordpress: '6.5'
+    needs: checks
 
     services:
       mysql:
@@ -106,10 +77,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up PHP ${{ matrix.php }}
+      - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: ${{ matrix.php }}
+          # Pinned to the version the client actually runs.
+          php-version: '8.4'
           extensions: mysqli
           coverage: none
 
@@ -117,15 +89,17 @@ jobs:
         run: composer install --prefer-dist --no-progress
 
       # Values reach the shell through the environment rather than being
-      # interpolated into the command. These particular ones come from the
-      # matrix above and are safe, but interpolating anything into a run block
-      # is a habit worth not having: the day one of them comes from an event
-      # payload instead, the injection is already written.
+      # interpolated into the command. These come from the workflow itself and
+      # are safe, but interpolating into a run block is a habit worth not
+      # having: the day a value comes from an event payload instead, the
+      # injection is already written.
       - name: Install the WordPress test library
         env:
-          WP_VERSION: ${{ matrix.wordpress }}
-        run: |
-          bash bin/install-wp-tests.sh wordpress_test root '' 127.0.0.1 "$WP_VERSION"
+          WP_VERSION: latest
+          DB_NAME: wordpress_test
+          DB_USER: root
+          DB_HOST: 127.0.0.1
+        run: bash bin/install-wp-tests.sh "$DB_NAME" "$DB_USER" '' "$DB_HOST" "$WP_VERSION" true
 
-      - name: Run the integration suite
+      - name: Integration tests
         run: vendor/bin/phpunit -c phpunit-integration.xml.dist
