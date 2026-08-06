@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Integration suite. Needs a real WordPress and a real database, which is why
+    it lives in its own configuration: these are the tests that catch what
+    stand-ins cannot, such as permission inheritance across a folder tree.
+
+    Run with: vendor/bin/phpunit -c phpunit-integration.xml.dist
+-->
+<phpunit
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+    bootstrap="tests/phpunit/bootstrap.php"
+    colors="true">
+
+    <testsuites>
+        <testsuite name="integration">
+            <directory>tests/phpunit/integration</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

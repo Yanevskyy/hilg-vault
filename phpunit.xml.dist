@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Unit suite. No database, no WordPress, no network: the real classes are
+    exercised against a handful of stand-in helpers, so this runs in seconds
+    and anywhere PHP runs.
+
+    PHPUnit is pinned to 9.x because the WordPress test library used by the
+    integration suite calls PHPUnit\Util\Test::parseTestMethodAnnotations(),
+    which 10.x removed. Found by running it rather than by reading about it.
+-->
+<phpunit
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+    bootstrap="tests/phpunit/bootstrap-unit.php"
+    colors="true"
+    convertErrorsToExceptions="true"
+    convertWarningsToExceptions="true"
+    convertNoticesToExceptions="true">
+
+    <testsuites>
+        <testsuite name="unit">
+            <directory>tests/phpunit/unit</directory>
+        </testsuite>
+    </testsuites>
+
+    <coverage>
+        <include>
+            <directory suffix=".php">src</directory>
+        </include>
+    </coverage>
+</phpunit>
