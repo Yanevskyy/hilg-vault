@@ -173,8 +173,9 @@
             name: String(folder.name == null ? '' : folder.name),
             meta: locked ? 'Password required' : '',
             href: '?hilg_folder=' + id,
-            dataset: { folder: String(id) },
-            ariaLabel: (locked ? 'Password protected folder ' : 'Open folder ') + folder.name
+            dataset: { folder: String(id) }
+            // No ariaLabel: the accessible name comes from the visible text,
+            // so the two cannot drift apart (WCAG 2.5.3).
         });
     }
 
@@ -189,8 +190,7 @@
             name: String(file.name == null ? '' : file.name),
             meta: (extension + ' ' + size).trim(),
             href: config.root + '/files/' + id + '/download',
-            dataset: { file: String(id) },
-            ariaLabel: 'Download ' + file.name + (size ? ', ' + size : '')
+            dataset: { file: String(id) }
         });
     }
 

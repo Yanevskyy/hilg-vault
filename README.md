@@ -165,15 +165,43 @@ obligations, not polish.
 
 Checked against a running instance, not asserted from reading the code:
 
+**Storage and permissions**
+
 - 40 MB file uploaded in three parts, reassembled, byte count exact
 - download through a signed URL returns the file with the correct name
 - iterating file ids as an outsider returns 403 for every private file
 - listing a private folder returns 403
 - wrong password rejected and rate limited, correct password opens the folder
 - shared password survives WordPress logout, as the brief requires
-- learning module keeps rendering with a dated notice while the platform is
-  stopped, and refreshes itself when it returns
-- 375px viewport: no horizontal overflow, no target under 44px
+- network members cannot reach wp-admin, and cannot open or modify content
+  belonging to anyone else
+
+**Learning platform**
+
+- module keeps rendering with a dated notice while the platform is stopped, and
+  refreshes itself when it returns
+
+**Accessibility** (Lighthouse, mobile, plus manual keyboard pass)
+
+- Accessibility 100, Best Practices 100, every audit passed
+- keyboard order: skip link first, then header, then controls, then content;
+  no focus traps; every target at least 44px
+- accessible names come from the visible text itself rather than a parallel
+  `aria-label`, so the two cannot drift apart (WCAG 2.5.3)
+- 375px viewport: no horizontal overflow
+
+**Backup and restore**, exercised rather than assumed:
+
+- the vault database was wiped, a page deleted and a web shell planted in the
+  uploads directory
+- the security scan flagged the planted file
+- restore from the previous night's backup returned 5 folders, 12 files,
+  4 pages and the role matrix, verified checksum first, in **10 seconds**
+- the first restore attempt failed: the storage client image has no `grep` or
+  `awk`, so locating the latest archive silently returned nothing. A backup
+  that cannot be restored is not a backup, and only a real restore finds this
+- restoring data does not remove a planted file. Closing the entry point is a
+  separate, deliberate step in the procedure
 
 ---
 

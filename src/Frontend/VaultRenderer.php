@@ -261,24 +261,26 @@ final class VaultRenderer
         $name = (string) $folder['name'];
         $url  = add_query_arg('hilg_folder', $id, get_permalink() ?: home_url('/'));
 
-        $label = $locked
-            /* translators: %s: folder name. */
-            ? sprintf(__('%s, password protected', 'hilg-vault'), $name)
-            /* translators: %s: folder name. */
-            : sprintf(__('Open folder %s', 'hilg-vault'), $name);
-
+        // No aria-label here, on purpose.
+        //
+        // WCAG 2.5.3 requires the accessible name to contain all the visible
+        // text of the control, and this row shows two pieces: the folder name
+        // and, when locked, "Password required". An aria-label would have to
+        // repeat both and stay in step with the markup forever. Letting the
+        // name come from the text itself makes them identical by definition,
+        // so the whole class of mismatch cannot occur. The icon is hidden from
+        // assistive technology and the list context already conveys structure.
         return sprintf(
             '<li class="hilg-vault__item hilg-vault__item--folder%1$s">
-                <a class="hilg-vault__link" href="%2$s" data-folder="%3$d" aria-label="%4$s">
-                    <span class="hilg-vault__icon" aria-hidden="true">%5$s</span>
-                    <span class="hilg-vault__name">%6$s</span>
-                    %7$s
+                <a class="hilg-vault__link" href="%2$s" data-folder="%3$d">
+                    <span class="hilg-vault__icon" aria-hidden="true">%4$s</span>
+                    <span class="hilg-vault__name">%5$s</span>
+                    %6$s
                 </a>
             </li>',
             $locked ? ' is-locked' : '',
             esc_url($url),
             $id,
-            esc_attr($label),
             $locked ? self::iconLock() : self::iconFolder(),
             esc_html($name),
             $locked
@@ -297,19 +299,18 @@ final class VaultRenderer
         $extension = strtoupper((string) ($file['extension'] ?? ''));
         $size      = size_format((int) $file['size_bytes'], 1);
 
+        // Same reasoning as folders: the accessible name is the visible text,
+        // which here reads as "HILG Annual Report 2025.pdf PDF 3.1 MB".
         return sprintf(
             '<li class="hilg-vault__item hilg-vault__item--file">
-                <a class="hilg-vault__link" href="%1$s" data-file="%2$d"
-                   aria-label="%3$s" rel="nofollow">
-                    <span class="hilg-vault__icon" aria-hidden="true">%4$s</span>
-                    <span class="hilg-vault__name">%5$s</span>
-                    <span class="hilg-vault__meta">%6$s</span>
+                <a class="hilg-vault__link" href="%1$s" data-file="%2$d" rel="nofollow">
+                    <span class="hilg-vault__icon" aria-hidden="true">%3$s</span>
+                    <span class="hilg-vault__name">%4$s</span>
+                    <span class="hilg-vault__meta">%5$s</span>
                 </a>
             </li>',
             esc_url(rest_url('hilg-vault/v1/files/' . $id . '/download')),
             $id,
-            /* translators: 1: file name, 2: file type, 3: file size. */
-            esc_attr(sprintf(__('Download %1$s, %2$s file, %3$s', 'hilg-vault'), $name, $extension, $size)),
             self::iconFile($extension),
             esc_html($name),
             esc_html(trim($extension . ' ' . $size))
