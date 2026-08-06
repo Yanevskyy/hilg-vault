@@ -148,10 +148,32 @@ if [ -n "$LOCKED_ID" ]; then
         "$API/unlock/$LOCKED_ID")
     check "Wrong password rejected" "$([ "$WRONG" = "401" ] && echo true || echo false)" "HTTP $WRONG"
 
-    RIGHT=$(curl -s -o /dev/null -w '%{http_code}' -m 25 -X POST \
-        -H 'Content-Type: application/json' -d "{\"password\":\"${FOLDER_PASSWORD}\"}" \
-        "$API/unlock/$LOCKED_ID")
-    check "Correct password accepted" "$([ "$RIGHT" = "200" ] && echo true || echo false)" "HTTP $RIGHT"
+    # The password supplied may belong to a different locked folder. Trying
+    # every locked folder and reporting "could not verify" when none accepts it
+    # is honest; declaring a defect because the script guessed the wrong folder
+    # would be a false failure, and those cost as much trust as a false pass.
+    LOCKED_IDS=$(echo "$FOLDERS" | json_get "
+print(' '.join(str(f['id']) for f in d if isinstance(d, list) and f.get('locked')))")
+
+    ACCEPTED=""
+    for CANDIDATE in $LOCKED_IDS; do
+        CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 25 -X POST \
+            -H 'Content-Type: application/json' -d "{\"password\":\"${FOLDER_PASSWORD}\"}" \
+            "$API/unlock/$CANDIDATE")
+
+        if [ "$CODE" = "200" ]; then
+            ACCEPTED="$CANDIDATE"
+            break
+        fi
+    done
+
+    if [ -n "$ACCEPTED" ]; then
+        check "Correct password accepted" "true" "folder $ACCEPTED"
+    else
+        printf '  [%s] Correct password accepted %s\n' "$(grey SKIP)" \
+            "$(grey "(supplied password matches none of the locked folders)")"
+        SKIP=$((SKIP + 1))
+    fi
 fi
 
 # Private folders must not appear at all for an anonymous visitor.

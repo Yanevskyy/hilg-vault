@@ -56,18 +56,22 @@ final class FileRepository
             return new \WP_Error('bad_filename', __('That file name cannot be used.', 'hilg-vault'));
         }
 
-        $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
+        $candidates = self::extensionCandidates($filename);
 
-        if ($extension !== '' && in_array($extension, self::BLOCKED_EXTENSIONS, true)) {
-            return new \WP_Error(
-                'blocked_type',
-                sprintf(
-                    /* translators: %s: file extension. */
-                    __('Files of type .%s cannot be uploaded.', 'hilg-vault'),
-                    $extension
-                )
-            );
+        foreach ($candidates as $candidate) {
+            if (in_array($candidate, self::BLOCKED_EXTENSIONS, true)) {
+                return new \WP_Error(
+                    'blocked_type',
+                    sprintf(
+                        /* translators: %s: file extension. */
+                        __('Files of type .%s cannot be uploaded.', 'hilg-vault'),
+                        $candidate
+                    )
+                );
+            }
         }
+
+        $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
 
         $maxBytes = self::maxUploadBytes();
 
@@ -318,19 +322,59 @@ final class FileRepository
     {
         $filename = trim($filename);
 
-        // Strip any directory component, including Windows separators.
-        $filename = (string) preg_replace('#^.*[\\\\/]#', '', $filename);
+        // Separators are replaced, not cut at.
+        //
+        // Cutting everything before the last slash defeats path traversal, but
+        // it also silently eats part of a legitimate name: "Q1/Q2
+        // comparison.pdf" would arrive as "Q2 comparison.pdf" and the user
+        // would never know. Replacing keeps the whole name visible while making
+        // it impossible for the name to describe a path. Nothing here is used
+        // as a path anyway, since the storage key is random.
+        $filename = str_replace(['\\', '/'], '-', $filename);
 
         // Control characters, including newlines that would break a header.
         $filename = (string) preg_replace('/[\x00-\x1F\x7F]/u', '', $filename);
 
-        // Leading dots would create a hidden file and add nothing useful.
-        $filename = ltrim($filename, '.');
+        // Zero width characters are invisible and are used to make two
+        // different names look identical in a listing.
+        $filename = (string) preg_replace('/[\x{200B}-\x{200D}\x{2060}\x{FEFF}]/u', '', $filename);
 
         // Collapse runs of whitespace so the name stays on one visual line.
         $filename = (string) preg_replace('/\s+/u', ' ', $filename);
 
         return trim(mb_substr($filename, 0, 200));
+    }
+
+    /**
+     * Extracts the extension for the block list check.
+     *
+     * pathinfo() is not enough on its own. A dotfile such as ".htaccess" has
+     * its whole name treated as an extension by some inputs and as none by
+     * others depending on what stripped the leading dot first, which is exactly
+     * how a blocked file slips through. Here the leading dots are considered
+     * part of the name, and the check looks at both the trailing extension and
+     * the bare dotfile name.
+     *
+     * @return array<int,string> Every candidate that must be checked.
+     */
+    private static function extensionCandidates(string $filename): array
+    {
+        $candidates = [];
+
+        $trimmed = ltrim($filename, '.');
+
+        // ".htaccess" -> "htaccess" as a whole-name candidate.
+        if ($trimmed !== $filename && !str_contains($trimmed, '.')) {
+            $candidates[] = strtolower($trimmed);
+        }
+
+        $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
+
+        if ($extension !== '') {
+            $candidates[] = $extension;
+        }
+
+        return array_unique($candidates);
     }
 
     /**
