@@ -23,11 +23,196 @@ defined('ABSPATH') || exit;
 
 final class VaultRenderer
 {
+    /** Set once a page renders anything that is not public. */
+    private static bool $renderedRestricted = false;
+
     public static function register(): void
     {
         add_shortcode('hilg_vault', [self::class, 'shortcode']);
         add_action('init', [self::class, 'registerBlock']);
         add_action('wp_enqueue_scripts', [self::class, 'registerAssets']);
+
+        // Must run before any output. Headers cannot be set once the body has
+        // started, which is why this cannot wait until rendering decides what
+        // it is showing.
+        add_action('template_redirect', [self::class, 'protectFromCaching'], 5);
+
+        // The password form posts to its own page. Without this handler it only
+        // works when JavaScript intercepts it, which would make the claim of
+        // progressive enhancement half true: the listing degrades gracefully,
+        // but a locked folder could never be opened without scripting.
+        add_action('template_redirect', [self::class, 'handlePasswordPost'], 4);
+    }
+
+    /**
+     * Handles the plain form submission from the password gate.
+     *
+     * Runs before output so the unlock cookie can actually be set. Setting it
+     * later produces a PHP warning and, more importantly, no cookie.
+     */
+    public static function handlePasswordPost(): void
+    {
+        if (!isset($_POST['hilg_vault_password'])) {
+            return;
+        }
+
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- a public
+        // gate with no state change beyond this visitor's own session; the
+        // password itself is the credential, and attempts are rate limited.
+        $password = (string) wp_unslash($_POST['hilg_vault_password']);
+
+        $folderId = isset($_POST['hilg_vault_folder'])
+            ? absint(wp_unslash($_POST['hilg_vault_folder']))
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            : (isset($_GET['hilg_folder']) ? absint(wp_unslash($_GET['hilg_folder'])) : 0);
+
+        if ($folderId === 0) {
+            return;
+        }
+
+        $base = get_permalink();
+        $base = is_string($base) && $base !== '' ? $base : home_url('/');
+
+        if (AccessPolicy::attemptPasswordUnlock($folderId, $password)) {
+            AccessPolicy::log('unlock', 'allowed', $folderId);
+
+            // Redirect after POST so a refresh does not resubmit the password.
+            wp_safe_redirect(add_query_arg('hilg_folder', $folderId, $base));
+            exit;
+        }
+
+        AccessPolicy::log('unlock', 'denied', $folderId);
+
+        wp_safe_redirect(add_query_arg(
+            ['hilg_folder' => $folderId, 'hilg_unlock' => 'failed'],
+            $base
+        ));
+        exit;
+    }
+
+    /**
+     * Decides, before the page renders, whether this response may be cached.
+     *
+     * The check has to happen up front: by the time the folder listing is
+     * drawn the headers are already on their way, and a late attempt fails
+     * silently. So the page content is inspected for our block or shortcode
+     * and the folders it references are resolved from the request.
+     */
+    private static function requestIsRestricted(): bool
+    {
+        if (is_user_logged_in()) {
+            return true;
+        }
+
+        // An unlock cookie means this visitor sees something others do not.
+        foreach (array_keys($_COOKIE) as $cookie) {
+            if (str_starts_with((string) $cookie, 'hilg_vault_pw_')) {
+                return true;
+            }
+        }
+
+        $post = get_post();
+
+        if (!$post instanceof \WP_Post) {
+            return false;
+        }
+
+        $content = (string) $post->post_content;
+
+        $hasVault = has_shortcode($content, 'hilg_vault')
+            || has_block('hilg-vault/folder', $post);
+
+        if (!$hasVault) {
+            return false;
+        }
+
+        // Which folder is on screen: the one in the request, or the one the
+        // page was configured with.
+        $folderIds = [];
+
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only.
+        if (isset($_GET['hilg_folder'])) {
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            $folderIds[] = absint(wp_unslash($_GET['hilg_folder']));
+        }
+
+        if (preg_match_all('/folder(?:Id)?[="\s:]+(\d+)/i', $content, $matches) === 1 || !empty($matches[1])) {
+            foreach ($matches[1] as $id) {
+                $folderIds[] = (int) $id;
+            }
+        }
+
+        foreach (array_unique(array_filter($folderIds)) as $folderId) {
+            $folder = AccessPolicy::folder($folderId);
+
+            if ($folder !== null && AccessPolicy::effectiveMode($folder) !== AccessPolicy::MODE_PUBLIC) {
+                return true;
+            }
+        }
+
+        // The root listing includes every top level folder, so if any of them
+        // is restricted the rendered page differs per visitor.
+        if ($folderIds === []) {
+            foreach (FolderRepository::children(null) as $child) {
+                if (AccessPolicy::effectiveMode($child) !== AccessPolicy::MODE_PUBLIC) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Keeps restricted listings out of page caches.
+     *
+     * The site sits behind LiteSpeed and Cloudflare, and both cache anything
+     * the origin does not explicitly refuse. A page showing a private folder,
+     * or a folder unlocked by password, would be stored and then served to the
+     * next visitor complete with someone else's files. The permission checks
+     * would work perfectly; nothing would ask them, because the answer would
+     * come from the cache.
+     *
+     * Marking the response is the only defence that does not depend on the
+     * cache being configured correctly by someone else.
+     */
+    public static function protectFromCaching(): void
+    {
+        if (is_admin() || !self::requestIsRestricted()) {
+            return;
+        }
+
+        if (headers_sent()) {
+            return;
+        }
+
+        self::$renderedRestricted = true;
+
+        // WordPress core headers cover browsers and well behaved proxies.
+        nocache_headers();
+
+        // LiteSpeed and Cloudflare each read their own signal.
+        header('Cache-Control: private, no-store, no-cache, max-age=0', true);
+        header('X-LiteSpeed-Cache-Control: no-cache, esi=off', true);
+        header('CDN-Cache-Control: no-store', true);
+
+        // Anything that does cache must at least vary on the unlock cookie.
+        header('Vary: Cookie', false);
+
+        // Tells LiteSpeed's own plugin, when present, to skip this response.
+        if (!defined('LSCACHE_NO_CACHE')) {
+            define('LSCACHE_NO_CACHE', true);
+        }
+
+        do_action('litespeed_control_set_nocache', 'HILG Vault restricted content');
+    }
+
+    /**
+     * Called by the renderer whenever it outputs something not public.
+     */
+    private static function markRestricted(): void
+    {
+        self::$renderedRestricted = true;
     }
 
     /**
@@ -179,6 +364,16 @@ final class VaultRenderer
             printf('<h2 class="hilg-vault__title">%s</h2>', esc_html($args['title']));
         }
 
+        // Anything that is not a public listing must not end up in a page
+        // cache, so the response is marked before any of it is rendered.
+        if ($folder !== null && AccessPolicy::effectiveMode($folder) !== AccessPolicy::MODE_PUBLIC) {
+            self::markRestricted();
+        }
+
+        if (is_user_logged_in()) {
+            self::markRestricted();
+        }
+
         // Password gate takes over the whole component when it applies.
         if ($folder !== null && !AccessPolicy::canViewFolder($folderId)) {
             // The trail stays, otherwise someone arriving on a closed folder
@@ -226,6 +421,12 @@ final class VaultRenderer
 
         foreach ($folders as $child) {
             $childId = (int) $child['id'];
+
+            // A listing that includes a locked or private folder is tailored to
+            // this visitor and must not be cached for the next one.
+            if (AccessPolicy::effectiveMode($child) !== AccessPolicy::MODE_PUBLIC) {
+                self::markRestricted();
+            }
 
             if (AccessPolicy::canViewFolder($childId)) {
                 $visibleFolders[] = ['row' => $child, 'locked' => false];
@@ -401,19 +602,25 @@ final class VaultRenderer
 
     private static function passwordForm(int $folderId): string
     {
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display only.
+        $failed = isset($_GET['hilg_unlock']) && $_GET['hilg_unlock'] === 'failed';
+
         return sprintf(
             '<form class="hilg-vault__password" data-folder="%1$d" method="post">
                 <p class="hilg-vault__password-intro">%2$s</p>
+                <input type="hidden" name="hilg_vault_folder" value="%1$d">
                 <label for="hilg-pw-%1$d">%3$s</label>
                 <input type="password" id="hilg-pw-%1$d" name="hilg_vault_password"
                        autocomplete="off" required>
                 <button type="submit" class="hilg-vault__button">%4$s</button>
-                <p class="hilg-vault__password-error" role="alert" hidden></p>
+                <p class="hilg-vault__password-error" role="alert"%5$s>%6$s</p>
             </form>',
             $folderId,
             esc_html__('This folder is password protected.', 'hilg-vault'),
             esc_html__('Password', 'hilg-vault'),
-            esc_html__('Open folder', 'hilg-vault')
+            esc_html__('Open folder', 'hilg-vault'),
+            $failed ? '' : ' hidden',
+            $failed ? esc_html__('That password did not work.', 'hilg-vault') : ''
         );
     }
 

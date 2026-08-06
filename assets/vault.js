@@ -43,7 +43,9 @@
             method: settings.method || 'GET',
             credentials: 'same-origin',
             headers: Object.assign(
-                { 'X-WP-Nonce': config.nonce },
+                // Announces this as our own script, so the download endpoint
+                // returns JSON here and a redirect for a plain link click.
+                { 'X-WP-Nonce': config.nonce, 'X-Requested-With': 'HilgVault' },
                 settings.body ? { 'Content-Type': 'application/json' } : {}
             ),
             body: settings.body ? JSON.stringify(settings.body) : undefined

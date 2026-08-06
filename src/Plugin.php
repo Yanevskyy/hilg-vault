@@ -258,6 +258,24 @@ final class Plugin
             return new \WP_REST_Response(['error' => 'not_found'], 404);
         }
 
+        // Confirm the object is actually there before handing out a link.
+        //
+        // One request to storage, only on download, never on listing. Without
+        // it an outage produces a link that leads to a browser error with no
+        // explanation, and the visitor cannot tell whether the file was
+        // deleted, they lack permission, or something is simply down.
+        if ($storage->headObject((string) $file['object_key']) === null) {
+            AccessPolicy::log('download', 'unavailable', (int) $file['folder_id'], $fileId);
+
+            return new \WP_REST_Response(
+                [
+                    'error'   => 'file_unavailable',
+                    'message' => __('This file cannot be reached right now. It has not been deleted, the storage service is not responding. Please try again shortly.', 'hilg-vault'),
+                ],
+                503
+            );
+        }
+
         $url = $storage->presignDownload((string) $file['object_key'], 300, (string) $file['name']);
 
         $wpdb->query(
@@ -266,7 +284,40 @@ final class Plugin
 
         AccessPolicy::log('download', 'allowed', (int) $file['folder_id'], $fileId);
 
+        // A browser following the link directly gets a redirect to the file.
+        // Only a script asking for JSON gets JSON.
+        //
+        // Without this, someone with JavaScript disabled clicks a document and
+        // is shown a page of raw JSON. The listing degrades gracefully and then
+        // the download, the one thing the whole plugin exists for, does not.
+        if (!self::wantsJson($request)) {
+            return new \WP_REST_Response(null, 302, ['Location' => $url]);
+        }
+
         return new \WP_REST_Response(['url' => $url, 'expires_in' => 300]);
+    }
+
+    /**
+     * Whether the caller is a script expecting JSON or a browser following a link.
+     *
+     * Our own script announces itself explicitly. Anything else that does not
+     * ask for JSON is treated as a person clicking a link, which is the safer
+     * default: a redirect is useful to both, raw JSON is useful only to code.
+     */
+    private static function wantsJson(\WP_REST_Request $request): bool
+    {
+        if ($request->get_header('x_requested_with') === 'HilgVault') {
+            return true;
+        }
+
+        $accept = (string) $request->get_header('accept');
+
+        // A browser navigating sends text/html first; fetch() defaults to */*.
+        if ($accept !== '' && str_contains($accept, 'text/html')) {
+            return false;
+        }
+
+        return $accept === '' || str_contains($accept, 'application/json') || str_contains($accept, '*/*');
     }
 
     public function restUnlock(\WP_REST_Request $request): \WP_REST_Response

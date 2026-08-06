@@ -308,6 +308,17 @@ final class AccessPolicy
     private static function grantPasswordUnlock(int $folderId): void
     {
         $expires = time() + self::PASSWORD_TTL;
+
+        // Setting a cookie after output has begun produces a warning and no
+        // cookie. The in-memory value below still lets the current request
+        // render as unlocked, so the visitor is not left staring at the form
+        // they just filled in correctly.
+        if (headers_sent()) {
+            $token = $expires . '|' . hash_hmac('sha256', $folderId . '|' . $expires, wp_salt('auth'));
+            $_COOKIE[self::COOKIE_PREFIX . $folderId] = $token;
+
+            return;
+        }
         $token   = $expires . '|' . hash_hmac('sha256', $folderId . '|' . $expires, wp_salt('auth'));
 
         setcookie(
