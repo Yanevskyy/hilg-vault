@@ -283,3 +283,64 @@
         transition: none;
     }
 }
+
+/* Pagination ----------------------------------------------------------- */
+
+.hilg-vault__pages {
+    margin-top: 1.25rem;
+}
+
+.hilg-vault__pages ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.hilg-vault__pages a,
+.hilg-vault__pages [aria-current="page"] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 0.7rem;
+    border: 1px solid var(--hv-line);
+    border-radius: var(--hv-radius);
+    text-decoration: none;
+}
+
+.hilg-vault__pages a {
+    color: var(--hv-accent);
+}
+
+.hilg-vault__pages a:hover {
+    background: var(--hv-hover);
+}
+
+.hilg-vault__pages a:focus-visible {
+    outline: 3px solid var(--hv-focus);
+    outline-offset: 2px;
+}
+
+.hilg-vault__pages [aria-current="page"] {
+    background: var(--hv-accent);
+    border-color: var(--hv-accent);
+    color: #fff;
+    font-weight: 700;
+}
+
+.hilg-vault__pages li[aria-hidden="true"] {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.2rem;
+    color: var(--hv-muted);
+}
+
+.hilg-vault__pages-count {
+    margin: 0.6rem 0 0;
+    color: var(--hv-muted);
+    font-size: 0.85rem;
+}

@@ -40,6 +40,12 @@ final class AccessPolicy
     /** How long a shared password unlock lasts. */
     private const PASSWORD_TTL = 12 * HOUR_IN_SECONDS;
 
+    /** Failed attempts allowed from one address before the gate closes. */
+    private const MAX_ATTEMPTS = 10;
+
+    /** How far back failed attempts are counted. */
+    private const ATTEMPT_WINDOW = 15 * MINUTE_IN_SECONDS;
+
     /** @var array<int,array<string,mixed>|null> Request level folder cache. */
     private static array $folderCache = [];
 
@@ -284,25 +290,59 @@ final class AccessPolicy
             return false;
         }
 
-        $throttleKey = 'hilg_pw_attempts_' . $folderId . '_' . self::clientFingerprint();
-        $attempts    = (int) get_transient($throttleKey);
+        // Attempts are counted from the audit log, not from a transient.
+        //
+        // A read-modify-write counter loses under concurrency: twenty parallel
+        // requests all read the same value before any of them writes, each
+        // stores "1", and the limit never trips. That is not theoretical, it
+        // was reproduced against this endpoint. Every failed attempt is already
+        // an INSERT into the log, and an INSERT is atomic, so counting rows
+        // removes the race by construction rather than guarding against it.
+        if (self::recentFailures($folderId) >= self::MAX_ATTEMPTS) {
+            self::log('unlock', 'throttled', $folderId);
 
-        if ($attempts >= 10) {
             return false;
         }
 
         $hash = (string) ($folder['password_hash'] ?? '');
 
         if ($hash === '' || !wp_check_password($password, $hash)) {
-            set_transient($throttleKey, $attempts + 1, 15 * MINUTE_IN_SECONDS);
+            self::log('unlock', 'denied', $folderId);
 
             return false;
         }
 
-        delete_transient($throttleKey);
         self::grantPasswordUnlock($folderId);
 
         return true;
+    }
+
+    /**
+     * Failed unlock attempts from this address inside the window.
+     *
+     * Counting rows rather than incrementing a stored number means concurrent
+     * requests cannot each miss the other's increment. The log is written on
+     * every denial regardless, so this costs one query and no extra state.
+     */
+    private static function recentFailures(int $folderId): int
+    {
+        global $wpdb;
+
+        $table = Schema::tableAccessLog();
+
+        return (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table}
+                 WHERE folder_id = %d
+                   AND action = 'unlock'
+                   AND result IN ('denied', 'throttled')
+                   AND ip_hash = %s
+                   AND created_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL %d SECOND)",
+                $folderId,
+                self::clientFingerprint(),
+                self::ATTEMPT_WINDOW
+            )
+        );
     }
 
     private static function grantPasswordUnlock(int $folderId): void
@@ -412,8 +452,11 @@ final class AccessPolicy
                 'action'    => $action,
                 'result'    => $result,
                 'ip_hash'   => self::clientFingerprint(),
+                // Stored in UTC so the throttle window compares like with like
+                // regardless of the site's timezone setting.
+                'created_at' => gmdate('Y-m-d H:i:s'),
             ],
-            ['%d', '%d', '%d', '%s', '%s', '%s']
+            ['%d', '%d', '%d', '%s', '%s', '%s', '%s']
         );
     }
 }

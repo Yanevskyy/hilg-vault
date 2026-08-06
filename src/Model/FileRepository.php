@@ -175,10 +175,63 @@ final class FileRepository
     }
 
     /**
+     * How many files one page of a listing holds.
+     *
+     * Without a limit, a folder of a few thousand documents renders as a single
+     * page of well over a megabyte. It survives, but it is slow on a phone,
+     * expensive on a metered connection, and unusable with a screen reader that
+     * has to walk every row to reach the end.
+     */
+    public const PER_PAGE = 60;
+
+    /**
+     * Counts files in a folder, for pagination.
+     */
+    public static function countByFolder(int $folderId, string $search = ''): int
+    {
+        global $wpdb;
+
+        $table = self::tableName();
+
+        if ($search !== '') {
+            return (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(*) FROM {$table}
+                     WHERE folder_id = %d AND deleted_at IS NULL AND status = %s AND name LIKE %s",
+                    $folderId,
+                    self::STATUS_AVAILABLE,
+                    '%' . $wpdb->esc_like($search) . '%'
+                )
+            );
+        }
+
+        return (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table}
+                 WHERE folder_id = %d AND deleted_at IS NULL AND status = %s",
+                $folderId,
+                self::STATUS_AVAILABLE
+            )
+        );
+    }
+
+    private static function tableName(): string
+    {
+        return Schema::tableFiles();
+    }
+
+    /**
+     * @param int $perPage Zero means every file, used by exports and reports.
+     *
      * @return array<int,array<string,mixed>>
      */
-    public static function listByFolder(int $folderId, string $search = '', string $orderBy = 'name'): array
-    {
+    public static function listByFolder(
+        int $folderId,
+        string $search = '',
+        string $orderBy = 'name',
+        int $page = 1,
+        int $perPage = self::PER_PAGE,
+    ): array {
         global $wpdb;
 
         $table = Schema::tableFiles();
@@ -193,13 +246,22 @@ final class FileRepository
 
         $order = $allowedOrder[$orderBy] ?? $allowedOrder['name'];
 
+        // A page size of zero means "everything", which exports and reports
+        // need. Anything else is clamped so a crafted request cannot ask the
+        // database for a million rows.
+        $perPage = $perPage <= 0 ? 0 : min(max($perPage, 1), 500);
+        $page    = max(1, $page);
+        $offset  = $perPage > 0 ? ($page - 1) * $perPage : 0;
+
+        $limitClause = $perPage > 0 ? $wpdb->prepare('LIMIT %d OFFSET %d', $perPage, $offset) : '';
+
         if ($search !== '') {
             $rows = $wpdb->get_results(
                 $wpdb->prepare(
                     "SELECT id, name, size_bytes, mime_type, extension, download_count, created_at
                      FROM {$table}
                      WHERE folder_id = %d AND deleted_at IS NULL AND status = %s AND name LIKE %s
-                     ORDER BY {$order}",
+                     ORDER BY {$order} {$limitClause}",
                     $folderId,
                     self::STATUS_AVAILABLE,
                     '%' . $wpdb->esc_like($search) . '%'
@@ -212,7 +274,7 @@ final class FileRepository
                     "SELECT id, name, size_bytes, mime_type, extension, download_count, created_at
                      FROM {$table}
                      WHERE folder_id = %d AND deleted_at IS NULL AND status = %s
-                     ORDER BY {$order}",
+                     ORDER BY {$order} {$limitClause}",
                     $folderId,
                     self::STATUS_AVAILABLE
                 ),

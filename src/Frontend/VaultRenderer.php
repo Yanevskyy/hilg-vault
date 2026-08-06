@@ -415,7 +415,14 @@ final class VaultRenderer
     private static function listing(int $folderId, string $layout): string
     {
         $folders = FolderRepository::children($folderId ?: null);
-        $files   = $folderId > 0 ? FileRepository::listByFolder($folderId) : [];
+
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only.
+        $page = isset($_GET['hilg_page']) ? max(1, absint(wp_unslash($_GET['hilg_page']))) : 1;
+
+        $total = $folderId > 0 ? FileRepository::countByFolder($folderId) : 0;
+        $files = $folderId > 0
+            ? FileRepository::listByFolder($folderId, '', 'name', $page)
+            : [];
 
         $visibleFolders = [];
 
@@ -455,7 +462,101 @@ final class VaultRenderer
             $out .= self::fileItem($file);
         }
 
-        return $out . '</ul>';
+        $out .= '</ul>';
+
+        return $out . self::pagination($total, $page);
+    }
+
+    /**
+     * Page links for a folder holding more files than one page shows.
+     *
+     * Plain links, so this works with scripting unavailable, and the current
+     * page is announced rather than merely styled. A folder that fits on one
+     * page gets no navigation at all.
+     */
+    private static function pagination(int $total, int $currentPage): string
+    {
+        $perPage = FileRepository::PER_PAGE;
+
+        if ($total <= $perPage) {
+            return '';
+        }
+
+        $pages = (int) ceil($total / $perPage);
+        $base  = remove_query_arg('hilg_page');
+
+        $out = sprintf(
+            '<nav class="hilg-vault__pages" aria-label="%s"><ul>',
+            esc_attr__('File pages', 'hilg-vault')
+        );
+
+        // A window around the current page keeps the control usable when a
+        // folder runs to dozens of pages.
+        $from = max(1, $currentPage - 2);
+        $to   = min($pages, $currentPage + 2);
+
+        if ($currentPage > 1) {
+            $out .= sprintf(
+                '<li><a href="%s" rel="prev">%s</a></li>',
+                esc_url(add_query_arg('hilg_page', $currentPage - 1, $base)),
+                esc_html__('Previous', 'hilg-vault')
+            );
+        }
+
+        if ($from > 1) {
+            $out .= sprintf(
+                '<li><a href="%s">1</a></li><li aria-hidden="true">&hellip;</li>',
+                esc_url(add_query_arg('hilg_page', 1, $base))
+            );
+        }
+
+        for ($i = $from; $i <= $to; $i++) {
+            if ($i === $currentPage) {
+                $out .= sprintf(
+                    '<li><span aria-current="page">%d</span></li>',
+                    $i
+                );
+
+                continue;
+            }
+
+            $out .= sprintf(
+                '<li><a href="%s">%d</a></li>',
+                esc_url(add_query_arg('hilg_page', $i, $base)),
+                $i
+            );
+        }
+
+        if ($to < $pages) {
+            $out .= sprintf(
+                '<li aria-hidden="true">&hellip;</li><li><a href="%s">%d</a></li>',
+                esc_url(add_query_arg('hilg_page', $pages, $base)),
+                $pages
+            );
+        }
+
+        if ($currentPage < $pages) {
+            $out .= sprintf(
+                '<li><a href="%s" rel="next">%s</a></li>',
+                esc_url(add_query_arg('hilg_page', $currentPage + 1, $base)),
+                esc_html__('Next', 'hilg-vault')
+            );
+        }
+
+        $out .= '</ul>';
+
+        $out .= sprintf(
+            '<p class="hilg-vault__pages-count">%s</p>',
+            esc_html(sprintf(
+                /* translators: 1: current page, 2: total pages, 3: total files. */
+                __('Page %1$d of %2$d, %3$d files', 'hilg-vault'),
+                $currentPage,
+                $pages,
+                $total
+            ))
+        );
+
+        return $out . '</nav>';
     }
 
     /**

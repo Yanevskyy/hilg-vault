@@ -208,18 +208,21 @@ final class Plugin
 
         $table = Schema::tableFiles();
 
-        $rows = $wpdb->get_results(
-            $wpdb->prepare(
-                "SELECT id, name, size_bytes, mime_type, extension, created_at
-                 FROM {$table}
-                 WHERE folder_id = %d AND deleted_at IS NULL AND status = 'available'
-                 ORDER BY name",
-                $folderId
-            ),
-            ARRAY_A
-        );
+        $page    = max(1, (int) ($request->get_param('page') ?: 1));
+        $search  = (string) ($request->get_param('search') ?: '');
+        $perPage = (int) ($request->get_param('per_page') ?: Model\FileRepository::PER_PAGE);
 
-        return new \WP_REST_Response($rows ?: []);
+        $rows  = Model\FileRepository::listByFolder($folderId, $search, 'name', $page, $perPage);
+        $total = Model\FileRepository::countByFolder($folderId, $search);
+
+        $response = new \WP_REST_Response($rows);
+
+        // Standard pagination headers, so a client knows there is more without
+        // having to guess from the row count.
+        $response->header('X-WP-Total', (string) $total);
+        $response->header('X-WP-TotalPages', (string) ($perPage > 0 ? (int) ceil($total / $perPage) : 1));
+
+        return $response;
     }
 
     /**
