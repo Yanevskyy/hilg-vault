@@ -112,6 +112,10 @@ final class AdminPage
             'rename'        => __('Rename', 'hilg-vault'),
             'move'          => __('Move', 'hilg-vault'),
             'moved'         => __('Moved', 'hilg-vault'),
+            'moveFile'      => __('Move file', 'hilg-vault'),
+            'moveFolder'    => __('Move folder', 'hilg-vault'),
+            'topLevel'      => __('Top level', 'hilg-vault'),
+            'cannotNest'    => __('A folder cannot be moved into itself or into one of its own sub folders.', 'hilg-vault'),
             'previous'      => __('Previous', 'hilg-vault'),
             'next'          => __('Next', 'hilg-vault'),
             /* translators: 1: current page, 2: total pages, 3: total files. */

@@ -328,6 +328,15 @@
 
         actions.appendChild(el('button', {
             type: 'button',
+            className: 'button',
+            text: text.moveFolder,
+            onClick: function () {
+                moveFolder(state.folderId);
+            }
+        }));
+
+        actions.appendChild(el('button', {
+            type: 'button',
             className: 'button hilg-admin__danger',
             text: text.delete,
             onClick: deleteCurrentFolder
@@ -703,6 +712,7 @@
         }
 
         state.moving = file;
+        document.getElementById('hilg-move-title').textContent = text.moveFile;
         document.getElementById('hilg-move-file').textContent = file.name;
 
         while (select.firstChild) {
@@ -739,26 +749,98 @@
         });
     }
 
+    /**
+     * Moving a folder reuses the same dialog, with the top level offered as a
+     * destination and the folder's own subtree removed from the list.
+     *
+     * The server refuses a move into a descendant anyway, since that would
+     * detach the branch from the tree. Filtering here as well means the editor
+     * never sees a choice that is going to be rejected.
+     */
+    function moveFolder(folderId) {
+        var dialog = document.getElementById('hilg-move-dialog');
+        var select = document.getElementById('hilg-move-target');
+
+        if (!dialog || !select || !folderId) {
+            return;
+        }
+
+        state.moving = { folder: folderId };
+        document.getElementById('hilg-move-title').textContent = text.moveFolder;
+        document.getElementById('hilg-move-file').textContent =
+            (state.folders[folderId] && state.folders[folderId].name) || '';
+
+        while (select.firstChild) {
+            select.removeChild(select.firstChild);
+        }
+
+        select.appendChild(el('option', { value: '', text: text.loading }));
+        dialog.showModal();
+
+        api('/manage/folders/flat').then(function (folders) {
+            var self = folders.filter(function (f) { return Number(f.id) === Number(folderId); })[0];
+            var prefix = self ? self.label + ' / ' : null;
+
+            var options = folders.filter(function (f) {
+                if (Number(f.id) === Number(folderId)) {
+                    return false;
+                }
+
+                return !(prefix && f.label.indexOf(prefix) === 0);
+            });
+
+            while (select.firstChild) {
+                select.removeChild(select.firstChild);
+            }
+
+            select.appendChild(el('option', { value: '0', text: text.topLevel }));
+
+            options.forEach(function (folder) {
+                select.appendChild(el('option', { value: String(folder.id), text: folder.label }));
+            });
+
+            select.focus();
+        });
+    }
+
     function saveMove() {
         var dialog = document.getElementById('hilg-move-dialog');
         var target = document.getElementById('hilg-move-target').value;
 
-        if (!target || !state.moving) {
+        if (target === '' || !state.moving) {
             return;
         }
 
-        api('/manage/files/' + state.moving.id + '/move', {
-            method: 'POST',
-            body: { folder_id: Number(target) }
-        })
+        var movingFolder = state.moving.folder !== undefined;
+
+        var request = movingFolder
+            ? api('/manage/folders/' + state.moving.folder + '/move', {
+                method: 'POST',
+                body: { parent_id: Number(target) || null }
+            })
+            : api('/manage/files/' + state.moving.id + '/move', {
+                method: 'POST',
+                body: { folder_id: Number(target) }
+            });
+
+        request
             .then(function () {
                 dialog.close();
                 state.moving = null;
                 status(text.moved);
+
+                // A moved folder changes the shape of the tree, so the sidebar
+                // is rebuilt. A moved file only changes one listing.
+                if (movingFolder) {
+                    loadTree();
+                }
+
                 selectFolder(state.folderId);
             })
-            .catch(function () {
-                status(text.failed);
+            .catch(function (error) {
+                var payload = error && error.payload;
+
+                status(payload && payload.error === 'cycle' ? text.cannotNest : text.failed);
             });
     }
 
