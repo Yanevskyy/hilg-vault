@@ -6,6 +6,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets anyone re-run the suite from the Actions tab without pushing a commit,
+  # which matters when a run fails for reasons that have nothing to do with the
+  # code, such as the platform being unavailable.
+  workflow_dispatch:
   # Weekly, because the support contract commits to weekly updates and a
   # dependency or a WordPress release can break things while nobody is editing
   # this repository.
