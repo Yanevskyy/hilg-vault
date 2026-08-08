@@ -44,6 +44,8 @@ final class Plugin
         add_action('rest_api_init', [$this, 'registerRestRoutes']);
 
         Admin\AdminPage::register();
+        Admin\MaintenancePage::register();
+        Maintenance\Housekeeping::register();
         Frontend\VaultRenderer::register();
 
         Lms\Catalogue::register();

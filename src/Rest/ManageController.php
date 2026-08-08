@@ -59,6 +59,18 @@ final class ManageController
             ],
         ]);
 
+        register_rest_route(self::NAMESPACE, '/manage/files', [
+            'methods'             => 'GET',
+            'callback'            => [self::class, 'allFiles'],
+            'permission_callback' => $manage,
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/manage/folders/flat', [
+            'methods'             => 'GET',
+            'callback'            => [self::class, 'flatFolders'],
+            'permission_callback' => $manage,
+        ]);
+
         register_rest_route(self::NAMESPACE, '/manage/folders/(?P<id>\d+)/move', [
             'methods'             => 'POST',
             'callback'            => [self::class, 'moveFolder'],
@@ -96,6 +108,12 @@ final class ManageController
         register_rest_route(self::NAMESPACE, '/manage/uploads/(?P<file>\d+)/complete', [
             'methods'             => 'POST',
             'callback'            => [self::class, 'completeUpload'],
+            'permission_callback' => [self::class, 'canActOnUpload'],
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/manage/files/(?P<file>\d+)/move', [
+            'methods'             => 'POST',
+            'callback'            => [self::class, 'moveFile'],
             'permission_callback' => [self::class, 'canActOnUpload'],
         ]);
 
@@ -180,6 +198,104 @@ final class ManageController
         );
 
         return self::respond($result, static fn(): array => ['moved' => true]);
+    }
+
+    /**
+     * The whole library on one screen, paginated, newest first.
+     *
+     * Before this existed the tree's root entry led to an empty table, because
+     * the listing is keyed by folder and nothing has folder zero. An
+     * administrator clicking "All files" reasonably expects all the files.
+     */
+    public static function allFiles(\WP_REST_Request $request): \WP_REST_Response
+    {
+        global $wpdb;
+
+        $page    = max(1, (int) ($request->get_param('page') ?: 1));
+        $search  = (string) ($request->get_param('search') ?: '');
+        $perPage = (int) ($request->get_param('per_page') ?: FileRepository::PER_PAGE);
+
+        $rows  = FileRepository::listAll($search, $page, $perPage);
+        $total = FileRepository::countAll($search);
+
+        $names = [];
+
+        foreach ($wpdb->get_results('SELECT id, name FROM ' . Schema::tableFolders(), ARRAY_A) ?: [] as $folder) {
+            $names[(int) $folder['id']] = (string) $folder['name'];
+        }
+
+        $files = array_map(static fn(array $row): array => [
+            'id'             => (int) $row['id'],
+            'name'           => (string) $row['name'],
+            'folder_id'      => (int) $row['folder_id'],
+            'folder_name'    => $names[(int) $row['folder_id']] ?? '',
+            'size_bytes'     => (int) $row['size_bytes'],
+            'extension'      => (string) $row['extension'],
+            'download_count' => (int) $row['download_count'],
+            'created_at'     => (string) $row['created_at'],
+        ], $rows);
+
+        $response = new \WP_REST_Response($files);
+        $response->header('X-WP-Total', (string) $total);
+        $response->header('X-WP-TotalPages', (string) ($perPage > 0 ? (int) ceil($total / $perPage) : 1));
+
+        return $response;
+    }
+
+    /**
+     * Every folder as a flat list, each labelled with its full display path.
+     *
+     * The move picker has to show "Reports / 2026 / Q1" rather than "Q1",
+     * because a library of any size has several folders called "2026". The
+     * stored path is built from slugs, so it is unsuitable for a human facing
+     * label; the display names are stitched together here instead, in one pass
+     * over the rows rather than one query per folder.
+     */
+    public static function flatFolders(): \WP_REST_Response
+    {
+        global $wpdb;
+
+        $table = Schema::tableFolders();
+
+        $rows = $wpdb->get_results(
+            "SELECT id, parent_id, name, path FROM {$table} WHERE deleted_at IS NULL ORDER BY path",
+            ARRAY_A
+        ) ?: [];
+
+        // Indexed by id so building a trail is a walk up the chain rather than
+        // a scan of the whole set per ancestor.
+        $byId = [];
+
+        foreach ($rows as $row) {
+            $byId[(int) $row['id']] = $row;
+        }
+
+        $folders = [];
+
+        foreach ($rows as $row) {
+            $trail  = [];
+            $cursor = $row;
+            $guard  = 0;
+
+            // The guard is not paranoia about the current data so much as about
+            // future edits: a cycle would hang the request rather than fail it.
+            while ($cursor !== null && $guard++ < 50) {
+                array_unshift($trail, (string) $cursor['name']);
+
+                $parentId = $cursor['parent_id'] === null ? 0 : (int) $cursor['parent_id'];
+                $cursor   = $byId[$parentId] ?? null;
+            }
+
+            $folders[] = [
+                'id'    => (int) $row['id'],
+                'name'  => (string) $row['name'],
+                'label' => implode(' / ', $trail),
+            ];
+        }
+
+        usort($folders, static fn(array $a, array $b): int => strcasecmp($a['label'], $b['label']));
+
+        return new \WP_REST_Response($folders, 200);
     }
 
     // -----------------------------------------------------------------
@@ -469,6 +585,38 @@ final class ManageController
             'size'    => $head['size'],
             'status'  => FileRepository::STATUS_AVAILABLE,
         ]);
+    }
+
+    /**
+     * Moves a file to another folder.
+     *
+     * Only the database row changes: the object key stays fixed, so moving a
+     * ten gigabyte file costs one UPDATE rather than a copy and a delete. The
+     * destination is permission checked separately, because the right to edit
+     * a file says nothing about the right to put things in a given folder.
+     */
+    public static function moveFile(\WP_REST_Request $request): \WP_REST_Response
+    {
+        $fileId = (int) $request->get_param('file');
+        $target = (int) $request->get_param('folder_id');
+
+        $file = FileRepository::find($fileId);
+
+        if ($file === null) {
+            return new \WP_REST_Response(['error' => 'not_found'], 404);
+        }
+
+        if (AccessPolicy::folder($target) === null) {
+            return new \WP_REST_Response(['error' => 'destination_missing'], 400);
+        }
+
+        if (!AccessPolicy::canUploadToFolder($target) && !current_user_can('hilg_manage_vault')) {
+            return new \WP_REST_Response(['error' => 'forbidden_destination'], 403);
+        }
+
+        $result = FileRepository::moveToFolder($fileId, $target);
+
+        return self::respond($result, static fn(): array => ['moved' => true]);
     }
 
     public static function renameFile(\WP_REST_Request $request): \WP_REST_Response

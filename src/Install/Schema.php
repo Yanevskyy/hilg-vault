@@ -71,6 +71,11 @@ final class Schema
         // Tables and files are intentionally preserved on deactivation.
         // Destructive cleanup belongs in uninstall.php, behind an explicit
         // opt-in, so an accidental deactivation never destroys a library.
+        //
+        // Scheduled jobs do stop, though: a deactivated plugin quietly deleting
+        // storage in the background would be a genuinely nasty surprise.
+        \ClarityWeb\HilgVault\Maintenance\Housekeeping::unschedule();
+
         flush_rewrite_rules();
     }
 

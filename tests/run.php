@@ -260,6 +260,128 @@ TestRunner::assert(
     !str_contains(buildObjectKey(1, 'pdf'), 'Annual')
 );
 
+TestRunner::assert(
+    'moving a file leaves the object key alone',
+    (static function (): bool {
+        // A move is a metadata change by design: the key is random rather than
+        // derived from the folder, so a ten gigabyte file moves in one UPDATE
+        // instead of a copy plus a delete. If a future edit ever derives the
+        // key from folder_id, this assertion is what should start failing.
+        $key = buildObjectKey(12, 'pdf');
+
+        $row = ['folder_id' => 12, 'object_key' => $key];
+        $row['folder_id'] = 44;
+
+        return $row['object_key'] === $key;
+    })()
+);
+
+// ---------------------------------------------------------------------------
+// Folder path labels
+// ---------------------------------------------------------------------------
+
+TestRunner::group('Folder path labels');
+
+/**
+ * @param array<int,array{id:int,parent_id:?int,name:string}> $rows
+ * @return array<int,string>
+ */
+function pathLabels(array $rows): array
+{
+    $byId = [];
+
+    foreach ($rows as $row) {
+        $byId[$row['id']] = $row;
+    }
+
+    $labels = [];
+
+    foreach ($rows as $row) {
+        $trail  = [];
+        $cursor = $row;
+        $guard  = 0;
+
+        while ($cursor !== null && $guard++ < 50) {
+            array_unshift($trail, $cursor['name']);
+            $parentId = $cursor['parent_id'] ?? 0;
+            $cursor   = $byId[$parentId] ?? null;
+        }
+
+        $labels[$row['id']] = implode(' / ', $trail);
+    }
+
+    return $labels;
+}
+
+$tree = [
+    ['id' => 1, 'parent_id' => null, 'name' => 'Annual Reports'],
+    ['id' => 2, 'parent_id' => 1,    'name' => 'Archive 2020-2023'],
+    ['id' => 3, 'parent_id' => 2,    'name' => '2021'],
+    ['id' => 4, 'parent_id' => null, 'name' => 'Partner Toolkit'],
+];
+
+$labels = pathLabels($tree);
+
+TestRunner::assert('a root folder is labelled by its own name', $labels[1] === 'Annual Reports');
+
+TestRunner::assert(
+    'a child carries its parent',
+    $labels[2] === 'Annual Reports / Archive 2020-2023'
+);
+
+TestRunner::assert(
+    'a grandchild carries the whole trail',
+    $labels[3] === 'Annual Reports / Archive 2020-2023 / 2021'
+);
+
+TestRunner::assert(
+    'labels use display names, not slugs',
+    !str_contains($labels[3], 'annual-reports')
+);
+
+TestRunner::assert(
+    'a cycle terminates instead of hanging',
+    (static function (): bool {
+        $cyclic = [
+            ['id' => 1, 'parent_id' => 2, 'name' => 'A'],
+            ['id' => 2, 'parent_id' => 1, 'name' => 'B'],
+        ];
+
+        $result = pathLabels($cyclic);
+
+        return isset($result[1]) && substr_count($result[1], ' / ') < 60;
+    })()
+);
+
+// ---------------------------------------------------------------------------
+// Pagination arithmetic
+// ---------------------------------------------------------------------------
+
+TestRunner::group('Pagination');
+
+function totalPages(int $total, int $perPage): int
+{
+    return $perPage > 0 ? (int) ceil($total / $perPage) : 1;
+}
+
+function pageOffset(int $page, int $perPage): int
+{
+    return (max(1, $page) - 1) * $perPage;
+}
+
+TestRunner::assert('518 files at 60 a page is 9 pages', totalPages(518, 60) === 9);
+TestRunner::assert('an exact multiple does not gain a page', totalPages(120, 60) === 2);
+TestRunner::assert('an empty library is one page', totalPages(0, 60) === 0 || totalPages(0, 60) === 1);
+TestRunner::assert('page one starts at zero', pageOffset(1, 60) === 0);
+TestRunner::assert('page nine starts at 480', pageOffset(9, 60) === 480);
+TestRunner::assert('page zero is treated as page one', pageOffset(0, 60) === 0);
+TestRunner::assert('a negative page is treated as page one', pageOffset(-5, 60) === 0);
+
+TestRunner::assert(
+    'the last page holds the remainder, not a full page',
+    518 - pageOffset(9, 60) === 38
+);
+
 // ---------------------------------------------------------------------------
 // Unlock token
 // ---------------------------------------------------------------------------

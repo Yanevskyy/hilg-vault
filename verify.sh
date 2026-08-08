@@ -201,6 +201,27 @@ ADMIN_API=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$API/manage/folders" -
 check "Management endpoints require authentication" \
     "$([ "$ADMIN_API" = "401" ] || [ "$ADMIN_API" = "403" ] && echo true || echo false)" "HTTP $ADMIN_API"
 
+# The cross-folder listing is the one endpoint that would hand over the entire
+# library in a single response, so it is checked by name rather than trusted to
+# the blanket check above.
+ALL_FILES=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$API/manage/files")
+check "Whole-library listing is closed to anonymous callers" \
+    "$([ "$ALL_FILES" = "401" ] || [ "$ALL_FILES" = "403" ] && echo true || echo false)" "HTTP $ALL_FILES"
+
+FLAT=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$API/manage/folders/flat")
+check "Folder map is closed to anonymous callers" \
+    "$([ "$FLAT" = "401" ] || [ "$FLAT" = "403" ] && echo true || echo false)" "HTTP $FLAT"
+
+MOVE=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$API/manage/files/1/move" -X POST)
+check "Moving a file is closed to anonymous callers" \
+    "$([ "$MOVE" = "401" ] || [ "$MOVE" = "403" ] && echo true || echo false)" "HTTP $MOVE"
+
+# Folder zero must stay empty on the public route. The management screen shows
+# the whole library through its own endpoint precisely so this one cannot.
+ROOT_FILES=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$API/folders/0/files")
+check "Folder zero is not a back door to every file" \
+    "$([ "$ROOT_FILES" = "403" ] || [ "$ROOT_FILES" = "404" ] && echo true || echo false)" "HTTP $ROOT_FILES"
+
 # ---------------------------------------------------------------------------
 section 'Requirement: LMS modules on selected pages'
 

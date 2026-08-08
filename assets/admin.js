@@ -28,7 +28,9 @@
     var state = {
         folderId: 0,
         folders: {},
-        editing: null
+        editing: null,
+        moving: null,
+        page: 1
     };
 
     // ---------------------------------------------------------------
@@ -58,6 +60,32 @@
                 }
 
                 return payload;
+            });
+        });
+    }
+
+    /**
+     * Same request, but the pagination headers survive.
+     *
+     * The plain api() helper throws the response away once the body is parsed,
+     * which is fine everywhere except the file listing, where X-WP-Total is the
+     * only way to know a second page exists.
+     */
+    function apiList(path) {
+        return fetch(config.root + path, {
+            credentials: 'same-origin',
+            headers: { 'X-WP-Nonce': config.nonce }
+        }).then(function (response) {
+            if (!response.ok) {
+                throw new Error('Request failed');
+            }
+
+            return response.json().then(function (items) {
+                return {
+                    items: items,
+                    total: Number(response.headers.get('X-WP-Total') || items.length),
+                    pages: Number(response.headers.get('X-WP-TotalPages') || 1)
+                };
             });
         });
     }
@@ -214,6 +242,17 @@
 
             actions.appendChild(el('button', {
                 type: 'button',
+                className: 'button-link',
+                text: text.move,
+                onClick: function () {
+                    moveFile(file);
+                }
+            }));
+
+            actions.appendChild(document.createTextNode(' | '));
+
+            actions.appendChild(el('button', {
+                type: 'button',
                 className: 'button-link hilg-admin__danger',
                 text: text.delete,
                 onClick: function () {
@@ -222,12 +261,19 @@
             }));
         }
 
-        return el('tr', {}, [
-            el('td', {}, [el('strong', { text: String(file.name) })]),
-            el('td', { className: 'hilg-admin__col-size', text: formatSize(file.size_bytes) }),
-            el('td', { className: 'hilg-admin__col-date', text: formatDate(file.created_at) }),
-            actions
-        ]);
+        var cells = [el('td', {}, [el('strong', { text: String(file.name) })])];
+
+        // The folder column only appears in the cross-folder listing, where a
+        // file name on its own does not say where the file lives.
+        if (state.folderId === 0) {
+            cells.push(el('td', { className: 'hilg-admin__col-folder', text: String(file.folder_name || '') }));
+        }
+
+        cells.push(el('td', { className: 'hilg-admin__col-size', text: formatSize(file.size_bytes) }));
+        cells.push(el('td', { className: 'hilg-admin__col-date', text: formatDate(file.created_at) }));
+        cells.push(actions);
+
+        return el('tr', {}, cells);
     }
 
     function renderFiles(files) {
@@ -237,9 +283,19 @@
             body.removeChild(body.firstChild);
         }
 
+        var folderHead = document.getElementById('hilg-col-folder');
+
+        if (folderHead) {
+            folderHead.hidden = state.folderId !== 0;
+        }
+
         if (!files.length) {
             body.appendChild(el('tr', {}, [
-                el('td', { colspan: '4', className: 'hilg-admin__empty', text: text.empty })
+                el('td', {
+                    colspan: state.folderId === 0 ? '5' : '4',
+                    className: 'hilg-admin__empty',
+                    text: text.empty
+                })
             ]));
 
             return;
@@ -299,8 +355,58 @@
         }));
     }
 
-    function selectFolder(folderId) {
+    /**
+     * Renders the pager beneath the table.
+     *
+     * Kept to Previous/Next plus a position readout rather than numbered pages:
+     * with five hundred files the numbers stop being useful, and the search box
+     * is the honest answer to "find one specific file" anyway.
+     */
+    function renderPagination(result) {
+        var host = document.getElementById('hilg-pagination');
+
+        while (host.firstChild) {
+            host.removeChild(host.firstChild);
+        }
+
+        if (result.pages <= 1) {
+            return;
+        }
+
+        var jump = function (page) {
+            return function () {
+                selectFolder(state.folderId, page);
+            };
+        };
+
+        host.appendChild(el('button', {
+            type: 'button',
+            className: 'button',
+            text: text.previous,
+            disabled: state.page <= 1 ? 'disabled' : null,
+            onClick: jump(state.page - 1)
+        }));
+
+        host.appendChild(el('span', {
+            className: 'hilg-admin__page-count',
+            text: text.pageOf
+                .replace('%1$s', String(state.page))
+                .replace('%2$s', String(result.pages))
+                .replace('%3$s', String(result.total))
+        }));
+
+        host.appendChild(el('button', {
+            type: 'button',
+            className: 'button',
+            text: text.next,
+            disabled: state.page >= result.pages ? 'disabled' : null,
+            onClick: jump(state.page + 1)
+        }));
+    }
+
+    function selectFolder(folderId, page) {
         state.folderId = folderId;
+        state.page = Math.max(1, page || 1);
         status(text.loading);
 
         var heading = document.getElementById('hilg-current-folder');
@@ -324,20 +430,22 @@
             }
         });
 
-        if (folderId === 0) {
-            renderFiles([]);
-            status('');
+        // The root entry lists the whole library through the management route.
+        // Folder zero cannot be used for this: it is reachable on the public
+        // listing route, where "everything" would be the wrong answer.
+        var path = folderId === 0
+            ? '/manage/files?page=' + state.page
+            : '/folders/' + folderId + '/files?page=' + state.page;
 
-            return;
-        }
-
-        api('/folders/' + folderId + '/files')
-            .then(function (files) {
-                renderFiles(files);
-                status(files.length + ' files');
+        apiList(path)
+            .then(function (result) {
+                renderFiles(result.items);
+                renderPagination(result);
+                status(text.fileCount.replace('%s', String(result.total)));
             })
             .catch(function () {
                 renderFiles([]);
+                renderPagination({ pages: 1, total: 0 });
                 status(text.failed);
             });
     }
@@ -580,6 +688,80 @@
             });
     }
 
+    /**
+     * Moving opens a dialog with a real select rather than a prompt asking for
+     * a number. The destination list is fetched fresh each time: the tree in
+     * the sidebar only holds the branches that have been expanded, so building
+     * the list from it would silently hide most of the library.
+     */
+    function moveFile(file) {
+        var dialog = document.getElementById('hilg-move-dialog');
+        var select = document.getElementById('hilg-move-target');
+
+        if (!dialog || !select) {
+            return;
+        }
+
+        state.moving = file;
+        document.getElementById('hilg-move-file').textContent = file.name;
+
+        while (select.firstChild) {
+            select.removeChild(select.firstChild);
+        }
+
+        select.appendChild(el('option', { value: '', text: text.loading }));
+        dialog.showModal();
+
+        api('/manage/folders/flat').then(function (folders) {
+            // The cross-folder listing carries folder_id on each row; the
+            // per-folder one does not, because there the folder is the screen.
+            var current = Number(file.folder_id || state.folderId);
+
+            var options = folders.filter(function (folder) {
+                return Number(folder.id) !== current;
+            });
+
+            while (select.firstChild) {
+                select.removeChild(select.firstChild);
+            }
+
+            if (!options.length) {
+                select.appendChild(el('option', { value: '', text: text.noDestination }));
+
+                return;
+            }
+
+            options.forEach(function (folder) {
+                select.appendChild(el('option', { value: String(folder.id), text: folder.label }));
+            });
+
+            select.focus();
+        });
+    }
+
+    function saveMove() {
+        var dialog = document.getElementById('hilg-move-dialog');
+        var target = document.getElementById('hilg-move-target').value;
+
+        if (!target || !state.moving) {
+            return;
+        }
+
+        api('/manage/files/' + state.moving.id + '/move', {
+            method: 'POST',
+            body: { folder_id: Number(target) }
+        })
+            .then(function () {
+                dialog.close();
+                state.moving = null;
+                status(text.moved);
+                selectFolder(state.folderId);
+            })
+            .catch(function () {
+                status(text.failed);
+            });
+    }
+
     function deleteFile(file) {
         if (!window.confirm(text.confirmDelete)) {
             return;
@@ -766,6 +948,16 @@
         }
 
         document.getElementById('hilg-dialog-save').addEventListener('click', saveDialog);
+
+        var moveDialog = document.getElementById('hilg-move-dialog');
+
+        if (moveDialog) {
+            document.getElementById('hilg-move-save').addEventListener('click', saveMove);
+            document.getElementById('hilg-move-cancel').addEventListener('click', function () {
+                state.moving = null;
+                moveDialog.close();
+            });
+        }
 
         document.getElementById('hilg-dialog-cancel').addEventListener('click', function () {
             state.editing = null;

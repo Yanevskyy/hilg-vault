@@ -110,6 +110,15 @@ final class AdminPage
             'newFolder'     => __('New folder', 'hilg-vault'),
             'folderName'    => __('Folder name', 'hilg-vault'),
             'rename'        => __('Rename', 'hilg-vault'),
+            'move'          => __('Move', 'hilg-vault'),
+            'moved'         => __('Moved', 'hilg-vault'),
+            'previous'      => __('Previous', 'hilg-vault'),
+            'next'          => __('Next', 'hilg-vault'),
+            /* translators: 1: current page, 2: total pages, 3: total files. */
+            'pageOf'        => __('Page %1$s of %2$s, %3$s files', 'hilg-vault'),
+            /* translators: %s: number of files. */
+            'fileCount'     => __('%s files', 'hilg-vault'),
+            'noDestination' => __('There is no other folder to move it to yet.', 'hilg-vault'),
             'delete'        => __('Delete', 'hilg-vault'),
             'settings'      => __('Access settings', 'hilg-vault'),
             'upload'        => __('Upload files', 'hilg-vault'),
@@ -225,6 +234,9 @@ final class AdminPage
                         <thead>
                             <tr>
                                 <th scope="col"><?php esc_html_e('Name', 'hilg-vault'); ?></th>
+                                <th scope="col" class="hilg-admin__col-folder" id="hilg-col-folder" hidden>
+                                    <?php esc_html_e('Folder', 'hilg-vault'); ?>
+                                </th>
                                 <th scope="col" class="hilg-admin__col-size"><?php esc_html_e('Size', 'hilg-vault'); ?></th>
                                 <th scope="col" class="hilg-admin__col-date"><?php esc_html_e('Added', 'hilg-vault'); ?></th>
                                 <th scope="col" class="hilg-admin__col-actions">
@@ -234,6 +246,8 @@ final class AdminPage
                         </thead>
                         <tbody id="hilg-file-rows"></tbody>
                     </table>
+
+                    <div class="hilg-admin__pagination" id="hilg-pagination"></div>
                 </section>
             </div>
 
@@ -292,6 +306,37 @@ final class AdminPage
                         <?php esc_html_e('Save', 'hilg-vault'); ?>
                     </button>
                     <button type="button" class="button" id="hilg-dialog-cancel">
+                        <?php esc_html_e('Cancel', 'hilg-vault'); ?>
+                    </button>
+                </p>
+            </form>
+        </dialog>
+
+        <?php
+        /*
+         * A second dialog rather than a prompt(): the destination is a choice
+         * from a known set, and a native select gives keyboard selection, type
+         * ahead and a screen reader announcement of how many options there are.
+         * A prompt asking an editor to type the number of a folder does none of
+         * that, and gets worse the larger the library becomes.
+         */
+        ?>
+        <dialog class="hilg-admin__dialog" id="hilg-move-dialog" aria-labelledby="hilg-move-title">
+            <form method="dialog" id="hilg-move-form">
+                <h2 id="hilg-move-title"><?php esc_html_e('Move file', 'hilg-vault'); ?></h2>
+
+                <p class="hilg-admin__moving" id="hilg-move-file"></p>
+
+                <div class="hilg-admin__field">
+                    <label for="hilg-move-target"><?php esc_html_e('Destination folder', 'hilg-vault'); ?></label>
+                    <select id="hilg-move-target" class="regular-text"></select>
+                </div>
+
+                <p class="hilg-admin__dialog-actions">
+                    <button type="button" class="button button-primary" id="hilg-move-save">
+                        <?php esc_html_e('Move', 'hilg-vault'); ?>
+                    </button>
+                    <button type="button" class="button" id="hilg-move-cancel">
                         <?php esc_html_e('Cancel', 'hilg-vault'); ?>
                     </button>
                 </p>

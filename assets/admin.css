@@ -364,3 +364,90 @@
     min-height: 32px;
     font-size: 13px;
 }
+
+/* Maintenance screen ---------------------------------------------------- */
+
+.hilg-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+}
+
+.hilg-stat {
+    padding: 16px;
+    border: 1px solid #c3c4c7;
+    border-left-width: 4px;
+    border-left-color: #2271b1;
+    border-radius: 4px;
+    background: #fff;
+}
+
+/* Space that is deleted but still being paid for gets its own colour and,
+   more importantly, its own label. */
+.hilg-stat--pending {
+    border-left-color: #dba617;
+}
+
+.hilg-stat__value {
+    display: block;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.hilg-stat__label {
+    display: block;
+    margin-top: 2px;
+    color: #50575e;
+    font-size: 12px;
+}
+
+.hilg-due {
+    color: #b32d2e;
+    font-weight: 600;
+}
+
+.hilg-result {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.hilg-result--allowed     { background: #e7f4ea; color: #14532d; }
+.hilg-result--denied      { background: #fce9e7; color: #8a1c08; }
+.hilg-result--throttled   { background: #fdf6e3; color: #6b4b00; }
+.hilg-result--unavailable { background: #eef1f3; color: #44494d; }
+
+/* Pagination ------------------------------------------------------------ */
+
+.hilg-admin__pagination {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.hilg-admin__pagination:empty {
+    margin-top: 0;
+}
+
+.hilg-admin__page-count {
+    color: #50575e;
+    font-size: 13px;
+}
+
+.hilg-admin__files .hilg-admin__col-folder {
+    width: 180px;
+}
+
+.hilg-admin__moving {
+    margin: 0 0 16px;
+    padding: 8px 10px;
+    border-left: 4px solid #2271b1;
+    background: #f6f7f7;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}

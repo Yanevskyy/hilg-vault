@@ -215,6 +215,89 @@ final class FileRepository
         );
     }
 
+    /**
+     * Counts every available file, regardless of folder.
+     *
+     * Deliberately separate from countByFolder rather than a zero meaning
+     * "everywhere": folder zero is reachable on the public listing route, and a
+     * magic value there would turn "show me folder 0" into "show me the entire
+     * library" for anyone who typed it.
+     */
+    public static function countAll(string $search = ''): int
+    {
+        global $wpdb;
+
+        $table = self::tableName();
+
+        if ($search !== '') {
+            return (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(*) FROM {$table}
+                     WHERE deleted_at IS NULL AND status = %s AND name LIKE %s",
+                    self::STATUS_AVAILABLE,
+                    '%' . $wpdb->esc_like($search) . '%'
+                )
+            );
+        }
+
+        return (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table} WHERE deleted_at IS NULL AND status = %s",
+                self::STATUS_AVAILABLE
+            )
+        );
+    }
+
+    /**
+     * Every available file across the whole library, newest first, paginated.
+     *
+     * Used only by the management screen, which is why it carries folder_id:
+     * a listing that spans folders is useless without saying which folder each
+     * row came from.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public static function listAll(
+        string $search = '',
+        int $page = 1,
+        int $perPage = self::PER_PAGE,
+    ): array {
+        global $wpdb;
+
+        $table = self::tableName();
+
+        $perPage = $perPage <= 0 ? self::PER_PAGE : min(max($perPage, 1), 500);
+        $page    = max(1, $page);
+        $offset  = ($page - 1) * $perPage;
+
+        if ($search !== '') {
+            return $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT * FROM {$table}
+                     WHERE deleted_at IS NULL AND status = %s AND name LIKE %s
+                     ORDER BY created_at DESC LIMIT %d OFFSET %d",
+                    self::STATUS_AVAILABLE,
+                    '%' . $wpdb->esc_like($search) . '%',
+                    $perPage,
+                    $offset
+                ),
+                ARRAY_A
+            ) ?: [];
+        }
+
+        return $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM {$table}
+                 WHERE deleted_at IS NULL AND status = %s
+                 ORDER BY created_at DESC LIMIT %d OFFSET %d",
+                self::STATUS_AVAILABLE,
+                $perPage,
+                $offset
+            ),
+            ARRAY_A
+        ) ?: [];
+    }
+
     private static function tableName(): string
     {
         return Schema::tableFiles();
@@ -304,6 +387,32 @@ final class FileRepository
             ['%s'],
             ['%d']
         );
+
+        return true;
+    }
+
+    /**
+     * Moves a file to another folder.
+     *
+     * The stored object is not touched. Because the key is random rather than
+     * derived from the folder or the name, a move is a metadata change, and a
+     * ten gigabyte file moves as fast as a one kilobyte one.
+     */
+    public static function moveToFolder(int $fileId, int $folderId): true|\WP_Error
+    {
+        global $wpdb;
+
+        $updated = $wpdb->update(
+            Schema::tableFiles(),
+            ['folder_id' => $folderId],
+            ['id' => $fileId],
+            ['%d'],
+            ['%d']
+        );
+
+        if ($updated === false) {
+            return new \WP_Error('db_error', __('The file could not be moved.', 'hilg-vault'));
+        }
 
         return true;
     }
