@@ -730,4 +730,70 @@ TestRunner::assert(
     !tokenValid(($now + 3600) . '|' . str_repeat('a', 64), 5, $salt, $now)
 );
 
+// ---------------------------------------------------------------------------
+// CSV export safety
+// ---------------------------------------------------------------------------
+
+TestRunner::group('CSV formula injection');
+
+/**
+ * Mirrors MaintenancePage::csvCell.
+ *
+ * A cell beginning with =, +, - or @ is executed by Excel rather than shown.
+ * File names are chosen by whoever uploads, including external network
+ * members, and the export exists so a public body can answer an information
+ * request in writing. The person answering opens it in Excel.
+ */
+function csvCell(string $value): string
+{
+    $value = (string) preg_replace('/[\r\n\t]+/', ' ', $value);
+    $value = ltrim($value);
+
+    if ($value === '') {
+        return $value;
+    }
+
+    return in_array($value[0], ['=', '+', '-', '@'], true) ? "'" . $value : $value;
+}
+
+TestRunner::same('an equals formula is neutralised', "'=1+1", csvCell('=1+1'));
+TestRunner::same('a command injection attempt is neutralised', "'=cmd|'/c calc'!A1", csvCell("=cmd|'/c calc'!A1"));
+TestRunner::same('a plus is neutralised', "'+1234", csvCell('+1234'));
+TestRunner::same('a minus is neutralised', "'-2+3", csvCell('-2+3'));
+TestRunner::same('an at sign is neutralised', "'@SUM(A1:A9)", csvCell('@SUM(A1:A9)'));
+
+TestRunner::same(
+    'an ordinary file name is untouched',
+    'Annual Report 2026.pdf',
+    csvCell('Annual Report 2026.pdf')
+);
+
+TestRunner::same('an empty cell stays empty', '', csvCell(''));
+
+TestRunner::same(
+    'a name with an equals inside it is left alone',
+    'Budget=final.xlsx',
+    csvCell('Budget=final.xlsx')
+);
+
+TestRunner::same(
+    'a newline in a name cannot split the row',
+    'Report 2026 second line',
+    csvCell("Report 2026\nsecond line")
+);
+
+TestRunner::same(
+    'a tab is flattened, not left to shift columns',
+    'Report 2026',
+    csvCell("Report\t2026")
+);
+
+// Found while writing these: the first version turned a leading tab into a
+// space and then judged the space, so the spreadsheet trimmed it back into a
+// formula. The guard has to look at the character the spreadsheet will.
+TestRunner::same('a tab in front of a formula does not hide it', "'=1+1", csvCell("\t=1+1"));
+TestRunner::same('spaces in front of a formula do not hide it', "'=1+1", csvCell('  =1+1'));
+TestRunner::same('a space before an at sign does not hide it', "'@SUM(A1)", csvCell(' @SUM(A1)'));
+TestRunner::same('whitespace only is empty, not escaped', '', csvCell('   '));
+
 exit(TestRunner::summary());

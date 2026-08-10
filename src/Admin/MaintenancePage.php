@@ -149,16 +149,16 @@ final class MaintenancePage
                 $user   = $userId > 0 ? get_userdata($userId) : null;
 
                 fputcsv($out, [
-                    (string) $row['created_at'],
-                    self::actionLabel((string) $row['action']),
-                    self::resultLabel((string) $row['result']),
-                    (string) ($row['file_name'] ?? ''),
-                    (string) ($row['folder_name'] ?? ''),
-                    $user instanceof \WP_User ? $user->user_login : '',
+                    self::csvCell((string) $row['created_at']),
+                    self::csvCell(self::actionLabel((string) $row['action'])),
+                    self::csvCell(self::resultLabel((string) $row['result'])),
+                    self::csvCell((string) ($row['file_name'] ?? '')),
+                    self::csvCell((string) ($row['folder_name'] ?? '')),
+                    self::csvCell($user instanceof \WP_User ? $user->user_login : ''),
                     // The address itself is never stored, only a keyed hash,
                     // so this identifies a visitor across entries without
                     // being personal data anyone can reverse.
-                    (string) $row['ip_hash'],
+                    self::csvCell((string) $row['ip_hash']),
                 ]);
             }
 
@@ -167,6 +167,46 @@ final class MaintenancePage
 
         fclose($out);
         exit;
+    }
+
+    /**
+     * Neutralises a value that a spreadsheet would treat as a formula.
+     *
+     * A cell beginning with =, +, - or @ is executed rather than displayed by
+     * Excel, LibreOffice and Sheets. The names in this log are not ours: a
+     * network member with upload rights chooses their own file names, and
+     * nothing in the upload path needs to reject "-Annual Report.pdf" or
+     * "=2026 figures.xlsx". They are harmless everywhere except here, where
+     * the meaning of a leading character changes.
+     *
+     * The audience makes it worse rather than better. This export exists so a
+     * public body can answer "who downloaded that document" in writing, and
+     * the person answering opens it in Excel, which this file is deliberately
+     * encoded to suit.
+     *
+     * Escaped at the export rather than at the upload, because the value is
+     * only dangerous in this one format. Prefixing with an apostrophe is the
+     * documented way to force a literal: the cell reads exactly as stored and
+     * the apostrophe is not part of the text.
+     */
+    private static function csvCell(string $value): string
+    {
+        // Newlines are quoted correctly by fputcsv, but a name spanning lines
+        // is unreadable in a report and is never legitimate here.
+        $value = (string) preg_replace('/[\r\n\t]+/', ' ', $value);
+
+        // Leading whitespace is removed before the first character is judged,
+        // not after. A tab in front of a formula becomes a space above, and a
+        // check on the raw first byte then sees the space, waves it through,
+        // and the spreadsheet trims it back to a formula. The guard has to
+        // look at the same character the spreadsheet will.
+        $value = ltrim($value);
+
+        if ($value === '') {
+            return $value;
+        }
+
+        return in_array($value[0], ['=', '+', '-', '@'], true) ? "'" . $value : $value;
     }
 
     /**
