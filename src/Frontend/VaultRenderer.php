@@ -394,8 +394,14 @@ final class VaultRenderer
 
         echo self::breadcrumbs($folderId); // phpcs:ignore WordPress.Security.EscapeOutput
 
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only.
+        $search = isset($_GET['hilg_search'])
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            ? sanitize_text_field(wp_unslash($_GET['hilg_search']))
+            : '';
+
         if ($args['show_search']) {
-            echo self::searchField($instanceId); // phpcs:ignore WordPress.Security.EscapeOutput
+            echo self::searchField($instanceId, $folderId, $search); // phpcs:ignore WordPress.Security.EscapeOutput
         }
 
         // Live region: screen readers hear what changed after navigating,
@@ -405,23 +411,26 @@ final class VaultRenderer
             esc_attr($instanceId)
         );
 
-        echo self::listing($folderId, $layout); // phpcs:ignore WordPress.Security.EscapeOutput
+        echo self::listing($folderId, $layout, $search); // phpcs:ignore WordPress.Security.EscapeOutput
 
         echo '</div>';
 
         return (string) ob_get_clean();
     }
 
-    private static function listing(int $folderId, string $layout): string
+    private static function listing(int $folderId, string $layout, string $search = ''): string
     {
+        // Searching looks inside the current folder's files. Sub folders are
+        // still listed unfiltered, because hiding the way onward would leave a
+        // visitor stuck on a page saying nothing matched.
         $folders = FolderRepository::children($folderId ?: null);
 
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only.
         $page = isset($_GET['hilg_page']) ? max(1, absint(wp_unslash($_GET['hilg_page']))) : 1;
 
-        $total = $folderId > 0 ? FileRepository::countByFolder($folderId) : 0;
+        $total = $folderId > 0 ? FileRepository::countByFolder($folderId, $search) : 0;
         $files = $folderId > 0
-            ? FileRepository::listByFolder($folderId, '', 'name', $page)
+            ? FileRepository::listByFolder($folderId, $search, 'name', $page)
             : [];
 
         $visibleFolders = [];
@@ -449,7 +458,18 @@ final class VaultRenderer
         }
 
         if ($visibleFolders === [] && $files === []) {
-            return self::notice(__('This folder is empty.', 'hilg-vault'));
+            // An empty folder and a search that found nothing are different
+            // facts, and telling someone their folder is empty when it holds
+            // four hundred files sends them looking for a fault.
+            return self::notice(
+                $search === ''
+                    ? __('This folder is empty.', 'hilg-vault')
+                    : sprintf(
+                        /* translators: %s: the search term entered. */
+                        __('No files match "%s" in this folder.', 'hilg-vault'),
+                        $search
+                    )
+            );
         }
 
         $out = '<ul class="hilg-vault__items hilg-vault__items--' . esc_attr($layout) . '" role="list">';
@@ -464,7 +484,7 @@ final class VaultRenderer
 
         $out .= '</ul>';
 
-        return $out . self::pagination($total, $page);
+        return $out . self::pagination($total, $page, $search);
     }
 
     /**
@@ -474,7 +494,7 @@ final class VaultRenderer
      * page is announced rather than merely styled. A folder that fits on one
      * page gets no navigation at all.
      */
-    private static function pagination(int $total, int $currentPage): string
+    private static function pagination(int $total, int $currentPage, string $search = ''): string
     {
         $perPage = FileRepository::PER_PAGE;
 
@@ -484,6 +504,12 @@ final class VaultRenderer
 
         $pages = (int) ceil($total / $perPage);
         $base  = remove_query_arg('hilg_page');
+
+        // Page links carry the search with them, otherwise page two of a
+        // result set quietly becomes page two of the whole folder.
+        if ($search !== '') {
+            $base = add_query_arg('hilg_search', $search, $base);
+        }
 
         $out = sprintf(
             '<nav class="hilg-vault__pages" aria-label="%s"><ul>',
@@ -672,17 +698,39 @@ final class VaultRenderer
         return $out . '</ol></nav>';
     }
 
-    private static function searchField(string $instanceId): string
+    /**
+     * Search that works with scripting unavailable, and searches the folder
+     * rather than the visible page.
+     *
+     * It used to be a bare input with no name and no form: nothing was ever
+     * submitted, so without JavaScript typing in it did nothing at all, and
+     * with JavaScript it hid rows that were already on screen. On a folder of
+     * five hundred files that means it searched the sixty being displayed and
+     * silently reported nothing found for the other four hundred and forty.
+     *
+     * Now it is a GET form the server answers. The script still intercepts it
+     * to avoid a page load, but it asks the same question of the same endpoint,
+     * so both paths give the same answer.
+     */
+    private static function searchField(string $instanceId, int $folderId, string $term): string
     {
+        $action = get_permalink() ?: home_url('/');
+
         return sprintf(
-            '<div class="hilg-vault__search">
-                <label class="screen-reader-text" for="%1$s-search">%2$s</label>
-                <input type="search" id="%1$s-search" class="hilg-vault__search-input"
-                       placeholder="%3$s" autocomplete="off">
-            </div>',
+            '<form class="hilg-vault__search" method="get" action="%1$s" role="search">
+                <input type="hidden" name="hilg_folder" value="%2$d">
+                <label class="screen-reader-text" for="%3$s-search">%4$s</label>
+                <input type="search" id="%3$s-search" class="hilg-vault__search-input"
+                       name="hilg_search" value="%5$s" placeholder="%6$s" autocomplete="off">
+                <button type="submit" class="hilg-vault__search-button">%7$s</button>
+            </form>',
+            esc_url($action),
+            $folderId,
             esc_attr($instanceId),
             esc_html__('Search files in this folder', 'hilg-vault'),
-            esc_attr__('Search files', 'hilg-vault')
+            esc_attr($term),
+            esc_attr__('Search files', 'hilg-vault'),
+            esc_html__('Search', 'hilg-vault')
         );
     }
 

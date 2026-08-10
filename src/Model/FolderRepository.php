@@ -306,8 +306,17 @@ final class FolderRepository
     }
 
     /**
-     * Ancestor chain for breadcrumbs, resolved from the materialised path in
-     * one query rather than one query per level.
+     * Ancestor chain for breadcrumbs.
+     *
+     * Walks up parent_id rather than matching the slugs in the materialised
+     * path. Slugs are unique among siblings only, so "Annual Reports/Archive"
+     * and "Toolkit/Archive" share a slug, and selecting by slug pulled both
+     * into the trail: a visitor deep in one branch saw a crumb belonging to
+     * another, and following it landed them somewhere they never were.
+     *
+     * The walk costs one query per level, but every folder on the way is
+     * already in the request cache from the permission check that got us here,
+     * so in practice it is no queries at all. Depth is capped at MAX_DEPTH.
      *
      * @return array<int,array{id:int,name:string}>
      */
@@ -319,31 +328,17 @@ final class FolderRepository
             return [];
         }
 
-        $slugs = array_values(array_filter(explode('/', (string) $folder['path'])));
-
-        if ($slugs === []) {
-            return [];
-        }
-
-        global $wpdb;
-
-        $table        = Schema::tableFolders();
-        $placeholders = implode(',', array_fill(0, count($slugs), '%s'));
-
-        $rows = $wpdb->get_results(
-            $wpdb->prepare(
-                "SELECT id, name, depth FROM {$table}
-                 WHERE slug IN ({$placeholders}) AND deleted_at IS NULL
-                 ORDER BY depth",
-                $slugs
-            ),
-            ARRAY_A
-        );
-
         $trail = [];
+        $guard = 0;
 
-        foreach ((array) $rows as $row) {
-            $trail[] = ['id' => (int) $row['id'], 'name' => (string) $row['name']];
+        while ($folder !== null && $guard++ <= self::MAX_DEPTH) {
+            array_unshift($trail, [
+                'id'   => (int) $folder['id'],
+                'name' => (string) $folder['name'],
+            ]);
+
+            $parentId = $folder['parent_id'] ?? null;
+            $folder   = $parentId === null ? null : AccessPolicy::folder((int) $parentId);
         }
 
         return $trail;

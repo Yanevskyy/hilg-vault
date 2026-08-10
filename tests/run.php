@@ -240,6 +240,40 @@ TestRunner::assert(
 
 TestRunner::group('Object key format');
 
+/**
+ * Mirrors FileRepository::blockedExtension, used by both upload and rename.
+ */
+function blockedExtension(string $filename): ?string
+{
+    $blocked = [
+        'php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'phps', 'phar',
+        'exe', 'com', 'bat', 'cmd', 'msi', 'scr', 'cpl', 'jar',
+        'sh', 'bash', 'zsh', 'ps1', 'psm1', 'vbs', 'js', 'jse', 'wsf', 'hta',
+        'htaccess', 'htpasswd',
+    ];
+
+    $candidates = [];
+    $trimmed    = ltrim($filename, '.');
+
+    if ($trimmed !== $filename && !str_contains($trimmed, '.')) {
+        $candidates[] = strtolower($trimmed);
+    }
+
+    $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
+
+    if ($extension !== '') {
+        $candidates[] = $extension;
+    }
+
+    foreach (array_unique($candidates) as $candidate) {
+        if (in_array($candidate, $blocked, true)) {
+            return $candidate;
+        }
+    }
+
+    return null;
+}
+
 function buildObjectKey(int $folderId, string $extension): string
 {
     $random = bin2hex(random_bytes(16));
@@ -380,6 +414,266 @@ TestRunner::assert('a negative page is treated as page one', pageOffset(-5, 60) 
 TestRunner::assert(
     'the last page holds the remainder, not a full page',
     518 - pageOffset(9, 60) === 38
+);
+
+// ---------------------------------------------------------------------------
+// Deleting from storage
+// ---------------------------------------------------------------------------
+
+TestRunner::group('Storage deletion');
+
+/**
+ * Mirrors S3Client::deletionSucceeded. Reaching the server is not the same as
+ * being allowed to delete.
+ */
+function deletionSucceeded(?int $code): bool
+{
+    if ($code === null) {
+        return false;
+    }
+
+    return ($code >= 200 && $code < 300) || $code === 404;
+}
+
+TestRunner::assert('204 is success', deletionSucceeded(204));
+TestRunner::assert('200 is success', deletionSucceeded(200));
+TestRunner::assert('404 is success, the object is already gone', deletionSucceeded(404));
+TestRunner::assert('403 is a failure, not a deletion', !deletionSucceeded(403));
+TestRunner::assert('500 is a failure', !deletionSucceeded(500));
+TestRunner::assert('a transport error is a failure', !deletionSucceeded(null));
+
+TestRunner::assert(
+    'a refused delete never lets the row be removed',
+    (static function (): bool {
+        // The row is the only thing pointing at the object. Dropping it after
+        // a refused delete orphans the object and bills for it for ever.
+        $rowDeleted = deletionSucceeded(403);
+
+        return $rowDeleted === false;
+    })()
+);
+
+// ---------------------------------------------------------------------------
+// Completing a multipart upload
+// ---------------------------------------------------------------------------
+
+TestRunner::group('Multipart completion');
+
+/**
+ * S3 can report failure inside a 200 response, because assembling the parts
+ * starts before the outcome is known.
+ */
+function completionSucceeded(string $body): bool
+{
+    if (str_contains($body, '<Error')) {
+        return false;
+    }
+
+    return str_contains($body, '<CompleteMultipartUploadResult');
+}
+
+TestRunner::assert(
+    'a real completion is accepted',
+    completionSucceeded('<?xml version="1.0"?><CompleteMultipartUploadResult><ETag>"abc"</ETag></CompleteMultipartUploadResult>')
+);
+
+TestRunner::assert(
+    'an error inside a 200 response is refused',
+    !completionSucceeded('<?xml version="1.0"?><Error><Code>InternalError</Code></Error>')
+);
+
+TestRunner::assert('an empty body is refused', !completionSucceeded(''));
+TestRunner::assert('an unrecognised body is refused', !completionSucceeded('<html>oops</html>'));
+
+// ---------------------------------------------------------------------------
+// Breadcrumbs
+// ---------------------------------------------------------------------------
+
+TestRunner::group('Breadcrumb trail');
+
+/**
+ * Walks parent_id, as FolderRepository::breadcrumbs now does.
+ *
+ * @param array<int,array{id:int,parent_id:?int,name:string,slug:string}> $rows
+ * @return array<int,string>
+ */
+function trailFor(array $rows, int $folderId): array
+{
+    $byId = [];
+
+    foreach ($rows as $row) {
+        $byId[$row['id']] = $row;
+    }
+
+    $trail  = [];
+    $cursor = $byId[$folderId] ?? null;
+    $guard  = 0;
+
+    while ($cursor !== null && $guard++ <= 32) {
+        array_unshift($trail, $cursor['name']);
+        $cursor = $cursor['parent_id'] === null ? null : ($byId[$cursor['parent_id']] ?? null);
+    }
+
+    return $trail;
+}
+
+/**
+ * The old approach: select every folder whose slug appears in the path. Slugs
+ * are unique among siblings only, so this pulls in strangers.
+ *
+ * @param array<int,array{id:int,parent_id:?int,name:string,slug:string}> $rows
+ * @return array<int,string>
+ */
+function trailBySlug(array $rows, array $slugs): array
+{
+    $names = [];
+
+    foreach ($rows as $row) {
+        if (in_array($row['slug'], $slugs, true)) {
+            $names[] = $row['name'];
+        }
+    }
+
+    return $names;
+}
+
+$library = [
+    ['id' => 1, 'parent_id' => null, 'name' => 'Annual Reports',  'slug' => 'annual-reports'],
+    ['id' => 2, 'parent_id' => 1,    'name' => 'Archive',         'slug' => 'archive'],
+    ['id' => 3, 'parent_id' => null, 'name' => 'Partner Toolkit', 'slug' => 'partner-toolkit'],
+    ['id' => 4, 'parent_id' => 3,    'name' => 'Archive',         'slug' => 'archive'],
+];
+
+TestRunner::same(
+    'a nested folder shows only its own ancestors',
+    ['Annual Reports', 'Archive'],
+    trailFor($library, 2)
+);
+
+TestRunner::same(
+    'the other branch shows its own, not the first one',
+    ['Partner Toolkit', 'Archive'],
+    trailFor($library, 4)
+);
+
+TestRunner::same('a root folder is its own trail', ['Annual Reports'], trailFor($library, 1));
+
+TestRunner::same(
+    'matching by slug pulled in a folder from another branch',
+    3,
+    count(trailBySlug($library, ['annual-reports', 'archive']))
+);
+
+TestRunner::assert(
+    'the walk terminates on a cycle instead of hanging',
+    (static function (): bool {
+        $cyclic = [
+            ['id' => 1, 'parent_id' => 2, 'name' => 'A', 'slug' => 'a'],
+            ['id' => 2, 'parent_id' => 1, 'name' => 'B', 'slug' => 'b'],
+        ];
+
+        return count(trailFor($cyclic, 1)) <= 34;
+    })()
+);
+
+// ---------------------------------------------------------------------------
+// Renaming
+// ---------------------------------------------------------------------------
+
+TestRunner::group('Rename safety');
+
+TestRunner::assert(
+    'a rename to .php is refused',
+    blockedExtension('report.php') !== null
+);
+
+TestRunner::assert(
+    'case does not get past the block list',
+    blockedExtension('Report.PHTML') !== null
+);
+
+TestRunner::assert(
+    'a dotfile is refused by its whole name',
+    blockedExtension('.htaccess') !== null
+);
+
+TestRunner::assert('an ordinary document is accepted', blockedExtension('Annual Report 2026.pdf') === null);
+TestRunner::assert('a spreadsheet is accepted', blockedExtension('Budget.xlsx') === null);
+
+TestRunner::same(
+    'the extension column follows the new name',
+    'xlsx',
+    strtolower((string) pathinfo('Renamed Report 2026.xlsx', PATHINFO_EXTENSION))
+);
+
+// ---------------------------------------------------------------------------
+// Telling visitors apart behind a proxy
+// ---------------------------------------------------------------------------
+
+TestRunner::group('Client address');
+
+/**
+ * Mirrors AccessPolicy::clientIp. The forwarded header is read only when the
+ * request genuinely arrived from a proxy we were told about.
+ *
+ * @param array<int,string> $trusted
+ */
+function clientIp(string $remote, string $forwarded, array $trusted): string
+{
+    if ($remote === '' || !in_array($remote, $trusted, true)) {
+        return $remote;
+    }
+
+    if ($forwarded === '') {
+        return $remote;
+    }
+
+    foreach (array_reverse(array_map('trim', explode(',', $forwarded))) as $candidate) {
+        if ($candidate === '' || in_array($candidate, $trusted, true)) {
+            continue;
+        }
+
+        return filter_var($candidate, FILTER_VALIDATE_IP) !== false ? $candidate : $remote;
+    }
+
+    return $remote;
+}
+
+$proxy = ['172.28.0.1'];
+
+TestRunner::same(
+    'behind a known proxy the real address is used',
+    '86.44.254.169',
+    clientIp('172.28.0.1', '86.44.254.169', $proxy)
+);
+
+TestRunner::same(
+    'a header from an unknown source is ignored',
+    '203.0.113.9',
+    clientIp('203.0.113.9', '1.2.3.4', $proxy)
+);
+
+TestRunner::same(
+    'the closest address in a chain wins, not the first',
+    '198.51.100.7',
+    clientIp('172.28.0.1', '1.2.3.4, 198.51.100.7', $proxy)
+);
+
+TestRunner::same(
+    'rubbish in the header falls back to the connection',
+    '172.28.0.1',
+    clientIp('172.28.0.1', 'not-an-address', $proxy)
+);
+
+TestRunner::same(
+    'no header means the connection address',
+    '172.28.0.1',
+    clientIp('172.28.0.1', '', $proxy)
+);
+
+TestRunner::assert(
+    'two visitors behind one proxy are told apart',
+    clientIp('172.28.0.1', '86.44.254.169', $proxy) !== clientIp('172.28.0.1', '72.62.88.47', $proxy)
 );
 
 // ---------------------------------------------------------------------------

@@ -248,25 +248,69 @@ final class S3Client
             'body'    => $xml,
         ]);
 
-        return $this->body($response) !== null;
+        $body = $this->body($response);
+
+        if ($body === null) {
+            return false;
+        }
+
+        // This one call can fail with HTTP 200.
+        //
+        // Completing a multipart upload can take minutes, so S3 starts the
+        // response immediately and only then discovers whether it worked,
+        // reporting the outcome in the body. Trusting the status code alone
+        // marks a failed assembly as available, and the file is listed but
+        // unreadable. Documented AWS behaviour, and the compatible providers
+        // copy it.
+        if (str_contains($body, '<Error')) {
+            return false;
+        }
+
+        return str_contains($body, '<CompleteMultipartUploadResult');
     }
 
     public function abortMultipartUpload(string $key, string $uploadId): bool
     {
         $url = $this->presign('DELETE', $key, 900, ['uploadId' => $uploadId]);
 
-        $response = wp_remote_request($url, ['method' => 'DELETE', 'timeout' => 20]);
-
-        return !is_wp_error($response);
+        return self::deletionSucceeded(
+            wp_remote_request($url, ['method' => 'DELETE', 'timeout' => 20])
+        );
     }
 
     public function deleteObject(string $key): bool
     {
         $url = $this->presign('DELETE', $key, 300);
 
-        $response = wp_remote_request($url, ['method' => 'DELETE', 'timeout' => 20]);
+        return self::deletionSucceeded(
+            wp_remote_request($url, ['method' => 'DELETE', 'timeout' => 20])
+        );
+    }
 
-        return !is_wp_error($response);
+    /**
+     * Whether a delete actually removed the object.
+     *
+     * Reaching the server is not the same as being allowed to delete. This
+     * used to report success for any response that was not a transport error,
+     * so an expired key answering 403 counted as "gone". Housekeeping then
+     * dropped the database row, which was the only thing pointing at the
+     * object, and the bucket kept billing for a file nothing could ever find
+     * again. A silent failure that costs money every month.
+     *
+     * 404 counts as success: the object is not there, which is the outcome
+     * asked for, and retrying forever would be pointless.
+     *
+     * @param array<string,mixed>|\WP_Error $response
+     */
+    private static function deletionSucceeded(array|\WP_Error $response): bool
+    {
+        if (is_wp_error($response)) {
+            return false;
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+
+        return ($code >= 200 && $code < 300) || $code === 404;
     }
 
     /**

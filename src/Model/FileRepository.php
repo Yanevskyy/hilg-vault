@@ -56,19 +56,17 @@ final class FileRepository
             return new \WP_Error('bad_filename', __('That file name cannot be used.', 'hilg-vault'));
         }
 
-        $candidates = self::extensionCandidates($filename);
+        $blocked = self::blockedExtension($filename);
 
-        foreach ($candidates as $candidate) {
-            if (in_array($candidate, self::BLOCKED_EXTENSIONS, true)) {
-                return new \WP_Error(
-                    'blocked_type',
-                    sprintf(
-                        /* translators: %s: file extension. */
-                        __('Files of type .%s cannot be uploaded.', 'hilg-vault'),
-                        $candidate
-                    )
-                );
-            }
+        if ($blocked !== null) {
+            return new \WP_Error(
+                'blocked_type',
+                sprintf(
+                    /* translators: %s: file extension. */
+                    __('Files of type .%s cannot be uploaded.', 'hilg-vault'),
+                    $blocked
+                )
+            );
         }
 
         $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
@@ -376,19 +374,62 @@ final class FileRepository
             return new \WP_Error('bad_filename', __('That file name cannot be used.', 'hilg-vault'));
         }
 
+        // Renaming is checked against the same block list as uploading.
+        //
+        // It was not, which left the block list decorative: upload a harmless
+        // report.txt, rename it to report.php, and the name a browser is handed
+        // at download time ends in .php. Nothing here executes it, but the
+        // download sets Content-Disposition from this name, and whatever the
+        // visitor saves is now named like something their own machine might
+        // run. A gate that only guards the front door is not a gate.
+        $blocked = self::blockedExtension($newName);
+
+        if ($blocked !== null) {
+            return new \WP_Error(
+                'blocked_type',
+                sprintf(
+                    /* translators: %s: file extension. */
+                    __('Files cannot be renamed to .%s.', 'hilg-vault'),
+                    $blocked
+                )
+            );
+        }
+
         global $wpdb;
+
+        // The extension column travels with the name. It drives the type badge
+        // and the "by type" sort, so leaving it behind makes a renamed file
+        // display and sort as whatever it used to be.
+        $extension = strtolower((string) pathinfo($newName, PATHINFO_EXTENSION));
 
         // Only the database row changes. The object key stays fixed, so
         // renaming a ten gigabyte file costs one UPDATE instead of a copy.
         $wpdb->update(
             Schema::tableFiles(),
-            ['name' => $newName],
+            [
+                'name'      => $newName,
+                'extension' => $extension !== '' ? $extension : null,
+            ],
             ['id' => $fileId],
-            ['%s'],
+            ['%s', '%s'],
             ['%d']
         );
 
         return true;
+    }
+
+    /**
+     * The first blocked extension a name carries, or null when it is clean.
+     */
+    private static function blockedExtension(string $filename): ?string
+    {
+        foreach (self::extensionCandidates($filename) as $candidate) {
+            if (in_array($candidate, self::BLOCKED_EXTENSIONS, true)) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     /**

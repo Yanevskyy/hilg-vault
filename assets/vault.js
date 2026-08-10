@@ -403,37 +403,76 @@
         });
     }
 
+    /**
+     * Search asks the server, exactly as the form does without scripting.
+     *
+     * The previous version hid rows already on the page, which searched the
+     * sixty files being displayed and quietly ignored the rest of the folder.
+     * Filtering what is on screen is not searching; it only looks like it when
+     * the folder is small enough to fit on one page.
+     */
     function bindSearch(root) {
-        var input = root.querySelector('.hilg-vault__search-input');
+        var form = root.querySelector('form.hilg-vault__search');
+
+        if (!form) {
+            return;
+        }
+
+        var input = form.querySelector('.hilg-vault__search-input');
 
         if (!input) {
             return;
         }
 
         var timer = null;
+        var latest = 0;
+
+        var run = function () {
+            var term = input.value.trim();
+            var folderId = Number(root.dataset.folder) || 0;
+
+            if (!folderId) {
+                return;
+            }
+
+            var sequence = ++latest;
+
+            announce(root, config.i18n.loading);
+
+            api('/folders/' + folderId + '/files?search=' + encodeURIComponent(term))
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error('rejected');
+                    }
+
+                    return response.json();
+                })
+                .then(function (files) {
+                    // A slow earlier request must not overwrite a later, more
+                    // recent answer. Typing produces exactly that race.
+                    if (sequence !== latest) {
+                        return;
+                    }
+
+                    var rows = Array.isArray(files) ? files : [];
+
+                    renderListing(root, [], rows);
+                    announce(root, rows.length + ' items');
+                })
+                .catch(function () {
+                    announce(root, config.i18n.failed);
+                });
+        };
+
+        form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            window.clearTimeout(timer);
+            run();
+        });
 
         input.addEventListener('input', function () {
             window.clearTimeout(timer);
-
-            timer = window.setTimeout(function () {
-                var term = input.value.trim().toLowerCase();
-                var items = root.querySelectorAll('.hilg-vault__item');
-                var shown = 0;
-
-                Array.prototype.forEach.call(items, function (item) {
-                    var name = item.querySelector('.hilg-vault__name');
-                    var text = name ? name.textContent.toLowerCase() : '';
-                    var match = term === '' || text.indexOf(term) !== -1;
-
-                    item.hidden = !match;
-
-                    if (match) {
-                        shown += 1;
-                    }
-                });
-
-                announce(root, shown + ' items');
-            }, 200);
+            timer = window.setTimeout(run, 250);
         });
     }
 

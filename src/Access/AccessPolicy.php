@@ -402,9 +402,74 @@ final class AccessPolicy
      */
     private static function clientFingerprint(): string
     {
-        $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
+        return substr(hash_hmac('sha256', self::clientIp(), wp_salt('auth')), 0, 16);
+    }
 
-        return substr(hash_hmac('sha256', $ip, wp_salt('auth')), 0, 16);
+    /**
+     * The visitor's address, seen through whatever sits in front of PHP.
+     *
+     * REMOTE_ADDR alone is wrong behind a reverse proxy, and wrong in a way
+     * that inverts the throttle. Every request arrives from the proxy, so every
+     * visitor shares one fingerprint: ten wrong passwords from one person shut
+     * the folder for everybody, and holding it shut is as easy as continuing to
+     * guess. Measured on the stand before this changed, 317 log entries carried
+     * a single hash, my laptop and the server itself among them.
+     *
+     * The forwarded header is only read when the request genuinely came from a
+     * proxy we were told about. Trusting it unconditionally would be worse than
+     * the bug: anyone could then send a fresh address with every attempt and
+     * never be throttled at all.
+     *
+     * Configure with HILG_TRUSTED_PROXIES in wp-config (comma separated), or
+     * the hilg_vault_trusted_proxies filter. Better still, configure real_ip on
+     * the web server, in which case REMOTE_ADDR is already correct and none of
+     * this runs.
+     */
+    private static function clientIp(): string
+    {
+        $remote = isset($_SERVER['REMOTE_ADDR'])
+            ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR']))
+            : '';
+
+        if ($remote === '' || !self::isTrustedProxy($remote)) {
+            return $remote;
+        }
+
+        $forwarded = isset($_SERVER['HTTP_X_FORWARDED_FOR'])
+            ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_FORWARDED_FOR']))
+            : '';
+
+        if ($forwarded === '') {
+            return $remote;
+        }
+
+        // The header is a chain, appended to by each hop. The rightmost entry
+        // that is not one of our own proxies is the closest we can get to the
+        // real client: anything further left was written by whoever connected
+        // and can say anything it likes.
+        $chain = array_reverse(array_map('trim', explode(',', $forwarded)));
+
+        foreach ($chain as $candidate) {
+            if ($candidate === '' || self::isTrustedProxy($candidate)) {
+                continue;
+            }
+
+            return filter_var($candidate, FILTER_VALIDATE_IP) !== false ? $candidate : $remote;
+        }
+
+        return $remote;
+    }
+
+    private static function isTrustedProxy(string $ip): bool
+    {
+        $configured = defined('HILG_TRUSTED_PROXIES') ? (string) constant('HILG_TRUSTED_PROXIES') : '';
+
+        $proxies = array_filter(array_map('trim', explode(',', $configured)));
+
+        /** @var array<int,string> $proxies */
+        $proxies = (array) apply_filters('hilg_vault_trusted_proxies', $proxies);
+
+        return in_array($ip, $proxies, true);
     }
 
     // ---------------------------------------------------------------------

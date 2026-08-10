@@ -344,3 +344,35 @@
     color: var(--hv-muted);
     font-size: 0.85rem;
 }
+
+/* Search form ----------------------------------------------------------- */
+
+.hilg-vault__search {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.hilg-vault__search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* The button is the whole control without scripting, so it is never hidden.
+   With scripting it is redundant but harmless, and removing it would break
+   the keyboard path for anyone who tabs to it. */
+.hilg-vault__search-button {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 0 16px;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+}
+
+.hilg-vault__search-button:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+}
