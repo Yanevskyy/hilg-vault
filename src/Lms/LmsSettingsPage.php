@@ -28,6 +28,7 @@ final class LmsSettingsPage
         add_action('admin_menu', [self::class, 'addMenu']);
         add_action('admin_post_hilg_vault_lms_save', [self::class, 'handleSave']);
         add_action('admin_post_hilg_vault_lms_refresh', [self::class, 'handleRefresh']);
+        add_action('admin_post_hilg_vault_lms_test', [self::class, 'handleTest']);
     }
 
     public static function addMenu(): void
@@ -88,6 +89,34 @@ final class LmsSettingsPage
         Catalogue::flush();
 
         wp_safe_redirect(add_query_arg('updated', '1', menu_page_url(self::SLUG, false)));
+        exit;
+    }
+
+    /**
+     * Asks the platform whether the settings on this screen actually work.
+     *
+     * Saving settings tells you they were stored, not that they are right. The
+     * provider has answered this question since it was written and nothing
+     * asked it, so the first sign of a wrong URL or an expired token was a
+     * module quietly serving yesterday's snapshot.
+     */
+    public static function handleTest(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have permission to do that.', 'hilg-vault'));
+        }
+
+        check_admin_referer(self::NONCE . '_test');
+
+        $provider = Catalogue::provider();
+
+        $result = $provider === null
+            ? ['ok' => false, 'message' => __('No learning platform URL is configured.', 'hilg-vault')]
+            : $provider->testConnection();
+
+        set_transient('hilg_vault_lms_test', $result, 5 * MINUTE_IN_SECONDS);
+
+        wp_safe_redirect(add_query_arg('tested', '1', menu_page_url(self::SLUG, false)));
         exit;
     }
 
@@ -249,8 +278,26 @@ final class LmsSettingsPage
             return;
         }
 
+        $tested = get_transient('hilg_vault_lms_test');
+
+        if (is_array($tested)) {
+            printf(
+                '<div class="notice notice-%1$s inline"><p>%2$s</p></div>',
+                esc_attr(!empty($tested['ok']) ? 'success' : 'error'),
+                esc_html((string) ($tested['message'] ?? ''))
+            );
+
+            delete_transient('hilg_vault_lms_test');
+        }
+
         ?>
         <h2 class="title"><?php esc_html_e('Catalogue', 'hilg-vault'); ?></h2>
+
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:12px;display:inline-block">
+            <input type="hidden" name="action" value="hilg_vault_lms_test">
+            <?php wp_nonce_field(self::NONCE . '_test'); ?>
+            <button type="submit" class="button"><?php esc_html_e('Test connection', 'hilg-vault'); ?></button>
+        </form>
 
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:12px">
             <input type="hidden" name="action" value="hilg_vault_lms_refresh">

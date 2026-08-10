@@ -197,9 +197,13 @@ final class RestProvider implements LmsProvider
             return $headers;
         }
 
+        // Only the two schemes the settings screen offers. A third was listed
+        // here and never implemented, so choosing it would have sent the
+        // request unauthenticated and reported the platform as rejecting our
+        // credentials, which is a hard thing to debug from the outside.
         return match ((string) $this->setting('auth', 'bearer')) {
             'header' => $headers + [(string) $this->setting('token_header', 'X-API-Key') => $token],
-            'query'  => $headers,
+            'none'   => $headers,
             default  => $headers + ['Authorization' => 'Bearer ' . $token],
         };
     }

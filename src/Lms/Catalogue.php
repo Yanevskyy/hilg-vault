@@ -29,16 +29,45 @@ final class Catalogue
     public const OPTION_SNAPSHOT = 'hilg_vault_lms_snapshot';
 
     private const CACHE_KEY = 'hilg_vault_lms_modules';
-    private const CACHE_TTL = 15 * MINUTE_IN_SECONDS;
+
+    /**
+     * Longer than the refresh interval, on purpose.
+     *
+     * It used to be fifteen minutes against an hourly cron, which meant the
+     * cache was empty for three quarters of every hour and the visitor who
+     * arrived first paid for the round trip: up to twelve seconds of page load
+     * because somebody else's API was slow. The scheduled job should be what
+     * refreshes this, and the cache should still be warm when it does. Two
+     * hours leaves an hour of margin for a cron that runs late.
+     */
+    private const CACHE_TTL = 2 * HOUR_IN_SECONDS;
+
+    /** Hook used to refresh in the background rather than during a page load. */
+    private const REFRESH_HOOK = 'hilg_vault_lms_refresh_async';
 
     public const CRON_HOOK = 'hilg_vault_lms_sync';
 
     public static function register(): void
     {
         add_action(self::CRON_HOOK, [self::class, 'sync']);
+        add_action(self::REFRESH_HOOK, [self::class, 'sync']);
 
         if (!wp_next_scheduled(self::CRON_HOOK)) {
             wp_schedule_event(time() + 300, 'hourly', self::CRON_HOOK);
+        }
+    }
+
+    /**
+     * Asks for a refresh soon, without doing it now.
+     *
+     * Serving a slightly old catalogue immediately is better for the visitor
+     * than a fresh one they waited twelve seconds for, and the difference
+     * matters most exactly when the platform is slow.
+     */
+    private static function scheduleRefresh(): void
+    {
+        if (!wp_next_scheduled(self::REFRESH_HOOK)) {
+            wp_schedule_single_event(time() + 30, self::REFRESH_HOOK);
         }
     }
 
@@ -95,6 +124,24 @@ final class Catalogue
             if (is_array($cached)) {
                 return self::result($cached['modules'], false, true, $cached['captured_at'], '');
             }
+
+            // Nothing cached, but a snapshot exists. Serve it and refresh in
+            // the background: a page render is the wrong place to wait on
+            // somebody else's API, and the snapshot is what the visitor would
+            // have seen a moment ago anyway.
+            $snapshot = self::snapshot();
+
+            if (!empty($snapshot['modules']) && !wp_doing_cron() && !is_admin()) {
+                self::scheduleRefresh();
+
+                return self::result(
+                    $snapshot['modules'],
+                    false,
+                    true,
+                    (string) ($snapshot['captured_at'] ?? ''),
+                    ''
+                );
+            }
         }
 
         try {
@@ -145,6 +192,20 @@ final class Catalogue
                     'stale'       => false,
                     'error'       => '',
                     'captured_at' => $cached['captured_at'],
+                ];
+            }
+
+            $snapshot = self::snapshot();
+            $stored   = $snapshot['lessons'][$moduleId] ?? null;
+
+            if (is_array($stored) && $stored['items'] !== [] && !wp_doing_cron() && !is_admin()) {
+                self::scheduleRefresh();
+
+                return [
+                    'lessons'     => $stored['items'],
+                    'stale'       => false,
+                    'error'       => '',
+                    'captured_at' => (string) $stored['captured_at'],
                 ];
             }
         }
