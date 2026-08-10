@@ -259,10 +259,12 @@ final class FileRepository
         string $search = '',
         int $page = 1,
         int $perPage = self::PER_PAGE,
+        string $orderBy = 'newest',
     ): array {
         global $wpdb;
 
         $table = self::tableName();
+        $order = self::orderClause($orderBy);
 
         $perPage = $perPage <= 0 ? self::PER_PAGE : min(max($perPage, 1), 500);
         $page    = max(1, $page);
@@ -273,7 +275,7 @@ final class FileRepository
                 $wpdb->prepare(
                     "SELECT * FROM {$table}
                      WHERE deleted_at IS NULL AND status = %s AND name LIKE %s
-                     ORDER BY created_at DESC LIMIT %d OFFSET %d",
+                     ORDER BY {$order} LIMIT %d OFFSET %d",
                     self::STATUS_AVAILABLE,
                     '%' . $wpdb->esc_like($search) . '%',
                     $perPage,
@@ -287,13 +289,34 @@ final class FileRepository
             $wpdb->prepare(
                 "SELECT * FROM {$table}
                  WHERE deleted_at IS NULL AND status = %s
-                 ORDER BY created_at DESC LIMIT %d OFFSET %d",
+                 ORDER BY {$order} LIMIT %d OFFSET %d",
                 self::STATUS_AVAILABLE,
                 $perPage,
                 $offset
             ),
             ARRAY_A
         ) ?: [];
+    }
+
+    /**
+     * Turns a requested ordering into SQL.
+     *
+     * A whitelist, not an escape. The value reaches SQL unquoted because
+     * ORDER BY cannot be parameterised, so the only safe form is one where
+     * nothing from the request is ever interpolated: an unknown key falls back
+     * to a known clause rather than being cleaned up and used.
+     */
+    private static function orderClause(string $orderBy, string $fallback = 'newest'): string
+    {
+        $allowed = [
+            'name'   => 'name ASC',
+            'size'   => 'size_bytes DESC',
+            'newest' => 'created_at DESC',
+            'oldest' => 'created_at ASC',
+            'type'   => 'extension ASC, name ASC',
+        ];
+
+        return $allowed[$orderBy] ?? $allowed[$fallback];
     }
 
     private static function tableName(): string
@@ -317,15 +340,7 @@ final class FileRepository
 
         $table = Schema::tableFiles();
 
-        $allowedOrder = [
-            'name'    => 'name ASC',
-            'size'    => 'size_bytes DESC',
-            'newest'  => 'created_at DESC',
-            'oldest'  => 'created_at ASC',
-            'type'    => 'extension ASC, name ASC',
-        ];
-
-        $order = $allowedOrder[$orderBy] ?? $allowedOrder['name'];
+        $order = self::orderClause($orderBy, 'name');
 
         // A page size of zero means "everything", which exports and reports
         // need. Anything else is clamped so a crafted request cannot ask the
@@ -462,26 +477,78 @@ final class FileRepository
     {
         global $wpdb;
 
+        // UTC, like every other timestamp this plugin writes.
+        //
+        // current_time('mysql') returns the site's local time, while the bin
+        // window is measured with UTC_TIMESTAMP. On a site set to Dublin that
+        // is an hour of drift in summer: a file deleted at 00:30 on the last
+        // day would be purged an hour early, or kept an hour late, depending
+        // which way the offset ran. Small, silent, and impossible to explain
+        // to whoever lost the file.
         $wpdb->update(
             Schema::tableFiles(),
-            ['deleted_at' => current_time('mysql')],
+            ['deleted_at' => gmdate('Y-m-d H:i:s')],
             ['id' => $fileId],
             ['%s'],
             ['%d']
         );
     }
 
+    /**
+     * Puts a file back, and its folder with it when the folder went too.
+     *
+     * Restoring the row alone produced a file nobody could reach: it was live,
+     * but its folder was still in the bin, so it appeared in no listing and no
+     * search. Present in the database, absent from the product. Deleting a
+     * folder takes its files down with it, so putting one back has to be able
+     * to bring the folder back up.
+     */
     public static function restore(int $fileId): void
     {
         global $wpdb;
 
+        $files   = Schema::tableFiles();
+        $folders = Schema::tableFolders();
+
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT folder_id FROM {$files} WHERE id = %d", $fileId),
+            ARRAY_A
+        );
+
+        if (is_array($row)) {
+            // The whole chain up to the root, because restoring a folder whose
+            // own parent is still deleted moves the problem rather than fixing
+            // it.
+            $folderId = (int) $row['folder_id'];
+            $guard    = 0;
+
+            while ($folderId > 0 && $guard++ < 64) {
+                $folder = $wpdb->get_row(
+                    $wpdb->prepare("SELECT id, parent_id, deleted_at FROM {$folders} WHERE id = %d", $folderId),
+                    ARRAY_A
+                );
+
+                if (!is_array($folder)) {
+                    break;
+                }
+
+                if ($folder['deleted_at'] !== null) {
+                    $wpdb->update($folders, ['deleted_at' => null], ['id' => $folderId], ['%s'], ['%d']);
+                }
+
+                $folderId = $folder['parent_id'] === null ? 0 : (int) $folder['parent_id'];
+            }
+        }
+
         $wpdb->update(
-            Schema::tableFiles(),
+            $files,
             ['deleted_at' => null],
             ['id' => $fileId],
             ['%s'],
             ['%d']
         );
+
+        \ClarityWeb\HilgVault\Access\AccessPolicy::flushCache();
     }
 
     /**
@@ -499,7 +566,7 @@ final class FileRepository
         return (int) $wpdb->query(
             $wpdb->prepare(
                 "UPDATE {$table} SET status = %s
-                 WHERE status = %s AND created_at < DATE_SUB(NOW(), INTERVAL %d HOUR)",
+                 WHERE status = %s AND created_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %d HOUR)",
                 self::STATUS_FAILED,
                 self::STATUS_PENDING,
                 $olderThanHours
@@ -592,6 +659,16 @@ final class FileRepository
     /**
      * Zero means no ceiling. The default is deliberately generous because the
      * upload does not pass through PHP, so the usual server limits do not apply.
+     *
+     * Worth being precise about what this does and does not do. The browser
+     * declares a size, we check it here, and the presigned PUT that follows is
+     * not itself size limited: a client that lied could send more. Enforcing it
+     * at the bucket needs a presigned POST policy with content-length-range,
+     * which every S3 provider supports but which changes the upload handshake.
+     * Since completion verifies the real size against the bucket before a file
+     * is ever listed, an oversized upload is recorded as failed rather than
+     * accepted, so the gap is billing rather than access. Documented here
+     * rather than left for someone to discover.
      */
     public static function maxUploadBytes(): int
     {

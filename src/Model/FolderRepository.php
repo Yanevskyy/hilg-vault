@@ -203,6 +203,35 @@ final class FolderRepository
 
         $table = Schema::tableFolders();
 
+        // The limit applies to the branch, not just the folder being moved.
+        //
+        // Creating checks depth, moving did not, so a shallow drag of a deep
+        // branch could push its leaves past the limit. Nothing enforces it
+        // afterwards, so the tree would simply be deeper than the code assumes
+        // and the guards that stop a runaway walk would start doing real work.
+        $deepest = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COALESCE(MAX(depth), %d) FROM {$table}
+                 WHERE (id = %d OR path LIKE %s) AND deleted_at IS NULL",
+                (int) $folder['depth'],
+                $folderId,
+                $wpdb->esc_like($oldPath) . '%'
+            )
+        );
+
+        $shift = $newDepth - (int) $folder['depth'];
+
+        if ($deepest + $shift > self::MAX_DEPTH) {
+            return new \WP_Error(
+                'too_deep',
+                sprintf(
+                    /* translators: %d: maximum folder nesting depth. */
+                    __('Moving this folder there would nest its contents more than %d levels deep.', 'hilg-vault'),
+                    self::MAX_DEPTH
+                )
+            );
+        }
+
         $wpdb->update(
             $table,
             [
@@ -225,7 +254,7 @@ final class FolderRepository
                  WHERE path LIKE %s AND id <> %d",
                 $newPath,
                 strlen($oldPath) + 1,
-                $newDepth - (int) $folder['depth'],
+                $shift,
                 $wpdb->esc_like($oldPath) . '%',
                 $folderId
             )
@@ -250,7 +279,8 @@ final class FolderRepository
             return new \WP_Error('not_found', __('Folder not found.', 'hilg-vault'));
         }
 
-        $now     = current_time('mysql');
+        // UTC everywhere, so the bin window compares like with like.
+        $now     = gmdate('Y-m-d H:i:s');
         $folders = Schema::tableFolders();
         $files   = Schema::tableFiles();
         $path    = $wpdb->esc_like((string) $folder['path']) . '%';

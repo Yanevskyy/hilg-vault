@@ -149,6 +149,14 @@ final class Plugin
                 ARRAY_A
             );
 
+        // Which of these folders have children, answered once for the whole
+        // list. Asking per row turned a listing of twenty folders into twenty
+        // extra queries, on a page that is drawn on every navigation.
+        $withChildren = self::childBearing(array_map(
+            static fn(array $row): int => (int) $row['id'],
+            (array) $rows
+        ));
+
         $visible = [];
 
         foreach ((array) $rows as $row) {
@@ -177,8 +185,7 @@ final class Plugin
                 'locked'       => false,
                 'mode'         => AccessPolicy::effectiveMode($row),
                 // The admin tree needs to know whether to render a child list.
-                // Counted in the same pass rather than one query per row.
-                'has_children' => self::hasChildren($id),
+                'has_children' => isset($withChildren[$id]),
             ];
         }
 
@@ -214,7 +221,12 @@ final class Plugin
         $search  = (string) ($request->get_param('search') ?: '');
         $perPage = (int) ($request->get_param('per_page') ?: Model\FileRepository::PER_PAGE);
 
-        $rows  = Model\FileRepository::listByFolder($folderId, $search, 'name', $page, $perPage);
+        // Ordering is chosen by the caller from a fixed set; the repository
+        // falls back to name for anything it does not recognise, so an invented
+        // value cannot reach the query.
+        $orderBy = (string) ($request->get_param('orderby') ?: 'name');
+
+        $rows  = Model\FileRepository::listByFolder($folderId, $search, $orderBy, $page, $perPage);
         $total = Model\FileRepository::countByFolder($folderId, $search);
 
         $response = new \WP_REST_Response($rows);
@@ -369,22 +381,41 @@ final class Plugin
     }
 
     /**
-     * Whether a folder has any live children.
+     * Which of the given folders have at least one live child.
      *
-     * EXISTS stops at the first match instead of counting the whole branch,
-     * which matters on a tree with thousands of folders.
+     * One grouped query for the whole list rather than an EXISTS per row. The
+     * result is keyed by id so the caller can test with isset.
+     *
+     * @param array<int,int> $folderIds
+     * @return array<int,true>
      */
-    private static function hasChildren(int $folderId): bool
+    private static function childBearing(array $folderIds): array
     {
+        $folderIds = array_values(array_filter(array_map('intval', $folderIds)));
+
+        if ($folderIds === []) {
+            return [];
+        }
+
         global $wpdb;
 
-        $table = Install\Schema::tableFolders();
+        $table        = Install\Schema::tableFolders();
+        $placeholders = implode(',', array_fill(0, count($folderIds), '%d'));
 
-        return (bool) $wpdb->get_var(
+        $rows = $wpdb->get_col(
             $wpdb->prepare(
-                "SELECT EXISTS(SELECT 1 FROM {$table} WHERE parent_id = %d AND deleted_at IS NULL)",
-                $folderId
+                "SELECT DISTINCT parent_id FROM {$table}
+                 WHERE parent_id IN ({$placeholders}) AND deleted_at IS NULL",
+                $folderIds
             )
         );
+
+        $map = [];
+
+        foreach ((array) $rows as $parentId) {
+            $map[(int) $parentId] = true;
+        }
+
+        return $map;
     }
 }

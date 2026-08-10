@@ -49,6 +49,22 @@ final class Housekeeping
     /** Objects removed per run, so a large cleanup cannot stall the schedule. */
     private const BATCH = 200;
 
+    /**
+     * How long the access log is kept.
+     *
+     * The log exists to answer "who downloaded this", which is a question with
+     * a shelf life. Keeping it for ever turns a useful record into a growing
+     * pile of personal data nobody decided to retain, which is the opposite of
+     * what data protection asks for. Two years covers an audit cycle and any
+     * reasonable query about a published document.
+     */
+    private const LOG_RETENTION_DAYS = 730;
+
+    /** Daily storage readings, kept for a year. */
+    public const OPTION_HISTORY = 'hilg_vault_storage_history';
+
+    private const HISTORY_DAYS = 365;
+
     public static function register(): void
     {
         add_action(self::CRON_HOOK, [self::class, 'run']);
@@ -78,14 +94,18 @@ final class Housekeeping
             'aborted'   => 0,
             'failed'    => 0,
             'bytes'     => 0,
+            'log_pruned' => self::pruneLog(),
         ];
 
         $storage = Plugin::instance()->storage();
 
         if ($storage === null) {
             // Nothing to reclaim without storage, and nothing to report as
-            // broken either: this is a legitimate configuration.
-            update_option('hilg_vault_last_housekeeping', $result + ['at' => current_time('mysql', true)], false);
+            // broken either: this is a legitimate configuration. The reading
+            // is still worth taking, since the database knows the sizes.
+            self::recordStorage();
+
+            update_option('hilg_vault_last_housekeeping', $result + ['at' => gmdate('Y-m-d H:i:s')], false);
 
             return $result;
         }
@@ -153,9 +173,100 @@ final class Housekeeping
             $result['aborted']++;
         }
 
-        update_option('hilg_vault_last_housekeeping', $result + ['at' => current_time('mysql', true)], false);
+        self::recordStorage();
+
+        update_option('hilg_vault_last_housekeeping', $result + ['at' => gmdate('Y-m-d H:i:s')], false);
 
         return $result;
+    }
+
+    /**
+     * Writes today's storage reading.
+     *
+     * One number a day, which is enough to answer the question this actually
+     * gets asked for: "are we going to run out, and when". A single current
+     * figure cannot answer it, and by the time somebody wants the trend it is
+     * too late to start collecting it.
+     */
+    public static function recordStorage(): void
+    {
+        global $wpdb;
+
+        $table = Schema::tableFiles();
+
+        $live = (int) $wpdb->get_var(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM {$table} WHERE deleted_at IS NULL AND status = 'available'"
+        );
+
+        $binned = (int) $wpdb->get_var(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM {$table} WHERE deleted_at IS NOT NULL"
+        );
+
+        $count = (int) $wpdb->get_var(
+            "SELECT COUNT(*) FROM {$table} WHERE deleted_at IS NULL AND status = 'available'"
+        );
+
+        $history = get_option(self::OPTION_HISTORY, []);
+        $history = is_array($history) ? $history : [];
+
+        // Replaced rather than appended, so two runs in a day are one day
+        // measured twice rather than a step in the chart that never happened.
+        $history[gmdate('Y-m-d')] = ['live' => $live, 'binned' => $binned, 'files' => $count];
+
+        ksort($history);
+
+        if (count($history) > self::HISTORY_DAYS) {
+            $history = array_slice($history, -self::HISTORY_DAYS, null, true);
+        }
+
+        update_option(self::OPTION_HISTORY, $history, false);
+    }
+
+    /**
+     * @return array<string,array<string,int>>
+     */
+    public static function storageHistory(int $days = 90): array
+    {
+        $history = get_option(self::OPTION_HISTORY, []);
+        $history = is_array($history) ? $history : [];
+
+        ksort($history);
+
+        return $days > 0 ? array_slice($history, -$days, null, true) : $history;
+    }
+
+    /**
+     * Drops access log entries past the retention period.
+     *
+     * Deleted in batches with a limit, because on a busy site the first run
+     * after this was introduced could otherwise try to remove years of rows in
+     * one statement and hold a lock while it does.
+     */
+    private static function pruneLog(): int
+    {
+        global $wpdb;
+
+        $table = Schema::tableAccessLog();
+
+        $days = (int) apply_filters('hilg_vault_log_retention_days', self::LOG_RETENTION_DAYS);
+
+        if ($days <= 0) {
+            return 0;
+        }
+
+        return (int) $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$table}
+                 WHERE created_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %d DAY)
+                 LIMIT 5000",
+                $days
+            )
+        );
+    }
+
+    public static function logRetentionDays(): int
+    {
+        return (int) apply_filters('hilg_vault_log_retention_days', self::LOG_RETENTION_DAYS);
     }
 
     /**

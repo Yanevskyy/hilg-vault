@@ -215,12 +215,12 @@ final class ManageController
         $search  = (string) ($request->get_param('search') ?: '');
         $perPage = (int) ($request->get_param('per_page') ?: FileRepository::PER_PAGE);
 
-        $rows  = FileRepository::listAll($search, $page, $perPage);
+        $rows  = FileRepository::listAll($search, $page, $perPage, (string) ($request->get_param('orderby') ?: 'newest'));
         $total = FileRepository::countAll($search);
 
         $names = [];
 
-        foreach ($wpdb->get_results('SELECT id, name FROM ' . Schema::tableFolders(), ARRAY_A) ?: [] as $folder) {
+        foreach ($wpdb->get_results('SELECT id, name FROM ' . Schema::tableFolders() . ' WHERE deleted_at IS NULL', ARRAY_A) ?: [] as $folder) {
             $names[(int) $folder['id']] = (string) $folder['name'];
         }
 
@@ -367,6 +367,13 @@ final class ManageController
         $table      = Schema::tableFolderRoles();
         $validRoles = array_keys(wp_roles()->roles);
 
+        // Replacing the matrix is a delete followed by inserts, and a failure
+        // between the two leaves the folder with no permissions at all. On a
+        // private folder that locks out everyone who had access, which is a
+        // support call rather than an error message. One transaction makes the
+        // pair all-or-nothing.
+        $wpdb->query('START TRANSACTION');
+
         $wpdb->delete($table, ['folder_id' => $folderId], ['%d']);
 
         foreach ($grants as $roleSlug => $flags) {
@@ -398,6 +405,8 @@ final class ManageController
                 ['%d', '%s', '%d', '%d', '%d']
             );
         }
+
+        $wpdb->query('COMMIT');
 
         AccessPolicy::flushCache();
 

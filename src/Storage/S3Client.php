@@ -173,11 +173,40 @@ final class S3Client
         $query = [];
 
         if ($downloadAs !== null) {
-            $query['response-content-disposition'] =
-                'attachment; filename="' . str_replace('"', '', $downloadAs) . '"';
+            $query['response-content-disposition'] = self::disposition($downloadAs);
         }
 
         return $this->presign('GET', $key, $expires, $query);
+    }
+
+    /**
+     * Content-Disposition carrying a name a browser will reproduce exactly.
+     *
+     * The plain filename parameter has no defined encoding for anything beyond
+     * ASCII, so browsers guess, and they guess differently. On an Irish site
+     * that shows up immediately: "Tuarascáil Bhliantúil.pdf" arrives as
+     * "Tuarascail Bhliantuil.pdf" in one browser and as mojibake in another.
+     * RFC 5987 gives the exact bytes and the charset, so there is nothing to
+     * guess. The ASCII form stays alongside it for anything too old to know
+     * the extended parameter.
+     */
+    private static function disposition(string $filename): string
+    {
+        // Quotes and control characters would end the header early or inject
+        // a second one.
+        $clean = (string) preg_replace('/[\x00-\x1F\x7F"]/u', '', $filename);
+
+        // Accents are folded rather than blanked. A byte-wise substitution
+        // turns "Tuarascáil" into "Tuarasc__il", because á is two bytes in
+        // UTF-8 and each one gets replaced separately. remove_accents gives
+        // "Tuarascail", which is a name someone can still recognise on the
+        // rare browser that falls back this far.
+        $ascii = function_exists('remove_accents') ? remove_accents($clean) : $clean;
+        $ascii = (string) preg_replace('/[^\x20-\x7E]/', '_', $ascii);
+        $ascii = trim($ascii) === '' ? 'download' : $ascii;
+
+        return 'attachment; filename="' . $ascii . '"; '
+            . "filename*=UTF-8''" . rawurlencode($clean);
     }
 
     /**

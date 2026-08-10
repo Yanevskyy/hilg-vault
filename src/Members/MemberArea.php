@@ -210,7 +210,15 @@ final class MemberArea
     {
         check_admin_referer(self::NONCE_CONTENT);
 
-        $user   = wp_get_current_user();
+        $user = wp_get_current_user();
+
+        // Checked here as well as on save. Ownership alone is not the whole
+        // rule: a member whose content rights were withdrawn still owns what
+        // they submitted, and should no longer be able to remove it.
+        if (!user_can($user, 'hilg_manage_own_content')) {
+            self::redirect('forbidden');
+        }
+
         $postId = isset($_POST['post_id']) ? absint(wp_unslash($_POST['post_id'])) : 0;
         $post   = $postId > 0 ? get_post($postId) : null;
 
@@ -481,7 +489,6 @@ final class MemberArea
                                     <input type="hidden" name="post_id" value="<?php echo (int) $post->ID; ?>">
                                     <?php wp_nonce_field(self::NONCE_CONTENT); ?>
                                     <?php self::returnField(); ?>
-                <?php self::returnField(); ?>
                                     <button type="submit" class="hilg-member__link hilg-member__link--danger">
                                         <?php esc_html_e('Remove', 'hilg-vault'); ?>
                                     </button>
@@ -511,18 +518,70 @@ final class MemberArea
         $folders = Schema::tableFolders();
 
         $rows = $wpdb->get_results(
-            "SELECT id, name FROM {$folders} WHERE deleted_at IS NULL ORDER BY path",
+            "SELECT id, parent_id, name FROM {$folders} WHERE deleted_at IS NULL ORDER BY path",
             ARRAY_A
         );
 
-        $roles     = array_values($user->roles);
+        $roles = array_values($user->roles);
+
+        if ($roles === []) {
+            return;
+        }
+
+        // Grants are read once and inherited in memory.
+        //
+        // Asking effectiveGrant per folder meant a query per folder, and
+        // effectiveGrant itself walks up the tree asking again at each level.
+        // On a library of five hundred folders that is thousands of queries to
+        // draw one list, every time a member opens their own page.
+        $roleTable    = Schema::tableFolderRoles();
+        $placeholders = implode(',', array_fill(0, count($roles), '%s'));
+
+        $grantRows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT folder_id, MAX(can_view) AS can_view
+                 FROM {$roleTable}
+                 WHERE role_slug IN ({$placeholders})
+                 GROUP BY folder_id",
+                $roles
+            ),
+            ARRAY_A
+        );
+
+        $granted = [];
+
+        foreach ((array) $grantRows as $grant) {
+            $granted[(int) $grant['folder_id']] = (bool) $grant['can_view'];
+        }
+
+        $parents = [];
+
+        foreach ((array) $rows as $row) {
+            $parents[(int) $row['id']] = $row['parent_id'] === null ? 0 : (int) $row['parent_id'];
+        }
+
+        // A folder with no row of its own inherits from the nearest ancestor
+        // that has one, which is what effectiveGrant does per folder.
+        $resolve = static function (int $folderId) use ($granted, $parents): bool {
+            $guard = 0;
+
+            while ($folderId > 0 && $guard++ < 64) {
+                if (array_key_exists($folderId, $granted)) {
+                    return $granted[$folderId];
+                }
+
+                $folderId = $parents[$folderId] ?? 0;
+            }
+
+            return false;
+        };
+
         $available = [];
 
         foreach ((array) $rows as $row) {
-            $id    = (int) $row['id'];
-            $grant = AccessPolicy::effectiveGrant($id, $roles);
+            $id = (int) $row['id'];
 
-            if ($grant !== null && $grant['can_view']) {
+            if ($resolve($id)) {
                 $available[] = ['id' => $id, 'name' => (string) $row['name']];
             }
         }

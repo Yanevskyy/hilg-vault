@@ -30,7 +30,11 @@
         folders: {},
         editing: null,
         moving: null,
-        page: 1
+        page: 1,
+        search: '',
+        sort: 'name',
+        selected: {},
+        folderCache: null
     };
 
     // ---------------------------------------------------------------
@@ -261,7 +265,26 @@
             }));
         }
 
-        var cells = [el('td', {}, [el('strong', { text: String(file.name) })])];
+        var checkbox = el('input', {
+            type: 'checkbox',
+            className: 'hilg-admin__row-check',
+            checked: state.selected[file.id] ? 'checked' : null,
+            'aria-label': String(file.name),
+            onChange: function (event) {
+                if (event.target.checked) {
+                    state.selected[file.id] = file;
+                } else {
+                    delete state.selected[file.id];
+                }
+
+                renderBulkBar();
+            }
+        });
+
+        var cells = [
+            el('td', { className: 'hilg-admin__col-check' }, [checkbox]),
+            el('td', {}, [el('strong', { text: String(file.name) })])
+        ];
 
         // The folder column only appears in the cross-folder listing, where a
         // file name on its own does not say where the file lives.
@@ -292,7 +315,7 @@
         if (!files.length) {
             body.appendChild(el('tr', {}, [
                 el('td', {
-                    colspan: state.folderId === 0 ? '5' : '4',
+                    colspan: state.folderId === 0 ? '6' : '5',
                     className: 'hilg-admin__empty',
                     text: text.empty
                 })
@@ -413,7 +436,146 @@
         }));
     }
 
+    /**
+     * The bulk bar reflects the selection and nothing else.
+     *
+     * Selection is kept in state rather than read from the DOM, so it survives
+     * a re-render: paging away and back, or reordering, does not silently drop
+     * what someone had chosen.
+     */
+    function renderBulkBar() {
+        var bar = document.getElementById('hilg-bulk');
+        var count = Object.keys(state.selected).length;
+
+        if (!bar) {
+            return;
+        }
+
+        bar.hidden = count === 0;
+        document.getElementById('hilg-bulk-count').textContent =
+            text.selected.replace('%d', String(count));
+
+        var all = document.getElementById('hilg-select-all');
+        var rows = document.querySelectorAll('.hilg-admin__row-check');
+        var checkedOnPage = document.querySelectorAll('.hilg-admin__row-check:checked');
+
+        if (all) {
+            all.checked = rows.length > 0 && rows.length === checkedOnPage.length;
+            all.indeterminate = checkedOnPage.length > 0 && checkedOnPage.length < rows.length;
+        }
+    }
+
+    function clearSelection() {
+        state.selected = {};
+
+        document.querySelectorAll('.hilg-admin__row-check').forEach(function (box) {
+            box.checked = false;
+        });
+
+        renderBulkBar();
+    }
+
+    /**
+     * Runs one request per selected file, four at a time.
+     *
+     * There is no bulk endpoint, and adding one would mean a second code path
+     * for permissions. Four concurrent requests is fast enough for the
+     * hundreds a person actually selects, and every file goes through exactly
+     * the same checks as it would alone.
+     */
+    function bulkRun(worker, doneMessage) {
+        var files = Object.keys(state.selected).map(function (id) { return state.selected[id]; });
+
+        if (!files.length) {
+            return;
+        }
+
+        var queue = files.slice();
+        var done = 0;
+        var failed = 0;
+
+        status(text.loading);
+
+        var next = function () {
+            var file = queue.shift();
+
+            if (!file) {
+                return Promise.resolve();
+            }
+
+            return worker(file)
+                .then(function () { done += 1; })
+                .catch(function () { failed += 1; })
+                .then(next);
+        };
+
+        var pool = [];
+
+        for (var i = 0; i < Math.min(4, files.length); i++) {
+            pool.push(next());
+        }
+
+        Promise.all(pool).then(function () {
+            clearSelection();
+            reload();
+
+            status(
+                doneMessage.replace('%d', String(done))
+                + (failed ? ' (' + failed + ' ' + text.failed + ')' : '')
+            );
+        });
+    }
+
+    function bulkDelete() {
+        if (!window.confirm(text.confirmBulk)) {
+            return;
+        }
+
+        bulkRun(
+            function (file) { return api('/manage/files/' + file.id, { method: 'DELETE' }); },
+            text.deletedCount
+        );
+    }
+
+    function bulkMove() {
+        openMoveDialog({
+            title: text.moveSelected,
+            subject: text.selected.replace('%d', String(Object.keys(state.selected).length)),
+            exclude: state.folderId,
+            offerTopLevel: false,
+            onPick: function (targetId) {
+                bulkRun(
+                    function (file) {
+                        return api('/manage/files/' + file.id + '/move', {
+                            method: 'POST',
+                            body: { folder_id: Number(targetId) }
+                        });
+                    },
+                    text.movedCount
+                );
+            }
+        });
+    }
+
+    /** Redraws the current view without changing what is being looked at. */
+    function reload() {
+        selectFolder(state.folderId, state.page);
+    }
+
     function selectFolder(folderId, page) {
+        // Moving to another folder starts a fresh question. Carrying a search
+        // across would show an empty folder that is not empty.
+        if (folderId !== state.folderId) {
+            state.search = '';
+            state.selected = {};
+
+            var searchBox = document.getElementById('hilg-search');
+
+            if (searchBox) {
+                searchBox.value = '';
+            }
+        }
+
         state.folderId = folderId;
         state.page = Math.max(1, page || 1);
         status(text.loading);
@@ -442,14 +604,19 @@
         // The root entry lists the whole library through the management route.
         // Folder zero cannot be used for this: it is reachable on the public
         // listing route, where "everything" would be the wrong answer.
+        var query = '?page=' + state.page
+            + '&orderby=' + encodeURIComponent(state.sort)
+            + (state.search ? '&search=' + encodeURIComponent(state.search) : '');
+
         var path = folderId === 0
-            ? '/manage/files?page=' + state.page
-            : '/folders/' + folderId + '/files?page=' + state.page;
+            ? '/manage/files' + query
+            : '/folders/' + folderId + '/files' + query;
 
         apiList(path)
             .then(function (result) {
                 renderFiles(result.items);
                 renderPagination(result);
+                renderBulkBar();
                 status(text.fileCount.replace('%s', String(result.total)));
             })
             .catch(function () {
@@ -681,39 +848,114 @@
     // File actions
     // ---------------------------------------------------------------
 
+    /**
+     * Renaming uses a dialog rather than prompt().
+     *
+     * prompt() cannot show why a name was refused, cannot be styled to match
+     * the admin, and on a name containing quotes some browsers mangle the
+     * default value. The server can refuse a rename, so there has to be
+     * somewhere to put the reason.
+     */
     function renameFile(file) {
-        var name = window.prompt(text.rename, file.name);
+        var dialog = document.getElementById('hilg-rename-dialog');
+        var input = document.getElementById('hilg-rename-input');
+        var error = document.getElementById('hilg-rename-error');
 
-        if (!name || name === file.name) {
+        if (!dialog || !input) {
             return;
         }
 
-        api('/manage/files/' + file.id, { method: 'PATCH', body: { name: name } })
+        state.renaming = file;
+        input.value = file.name;
+        error.textContent = '';
+
+        dialog.showModal();
+        input.focus();
+        input.select();
+    }
+
+    function saveRename() {
+        var dialog = document.getElementById('hilg-rename-dialog');
+        var input = document.getElementById('hilg-rename-input');
+        var error = document.getElementById('hilg-rename-error');
+        var name = input.value.trim();
+
+        if (!name || !state.renaming) {
+            return;
+        }
+
+        if (name === state.renaming.name) {
+            dialog.close();
+            state.renaming = null;
+
+            return;
+        }
+
+        api('/manage/files/' + state.renaming.id, { method: 'PATCH', body: { name: name } })
             .then(function () {
-                selectFolder(state.folderId);
+                dialog.close();
+                state.renaming = null;
+                reload();
             })
-            .catch(function () {
-                status(text.failed);
+            .catch(function (err) {
+                // The server refuses names ending in an executable extension,
+                // and the reason belongs where the name was typed.
+                var payload = err && err.payload;
+
+                error.textContent = (payload && payload.message) || text.failed;
+                input.focus();
             });
     }
 
     /**
-     * Moving opens a dialog with a real select rather than a prompt asking for
-     * a number. The destination list is fetched fresh each time: the tree in
-     * the sidebar only holds the branches that have been expanded, so building
-     * the list from it would silently hide most of the library.
+     * One dialog for every kind of move: a file, a folder, or a selection.
+     *
+     * The destination list is fetched fresh rather than read from the sidebar
+     * tree, which only holds the branches somebody has expanded. A filter sits
+     * above it because a select with several hundred options is unusable by
+     * scrolling, and typing is how people find a folder they already know the
+     * name of.
      */
-    function moveFile(file) {
+    function openMoveDialog(options) {
         var dialog = document.getElementById('hilg-move-dialog');
         var select = document.getElementById('hilg-move-target');
+        var filter = document.getElementById('hilg-move-filter');
 
         if (!dialog || !select) {
             return;
         }
 
-        state.moving = file;
-        document.getElementById('hilg-move-title').textContent = text.moveFile;
-        document.getElementById('hilg-move-file').textContent = file.name;
+        document.getElementById('hilg-move-title').textContent = options.title;
+        document.getElementById('hilg-move-file').textContent = options.subject;
+
+        state.movePick = options.onPick;
+        filter.value = '';
+
+        var fill = function (folders) {
+            var term = filter.value.trim().toLowerCase();
+
+            while (select.firstChild) {
+                select.removeChild(select.firstChild);
+            }
+
+            if (options.offerTopLevel) {
+                select.appendChild(el('option', { value: '0', text: text.topLevel }));
+            }
+
+            var shown = folders.filter(function (folder) {
+                return term === '' || folder.label.toLowerCase().indexOf(term) !== -1;
+            });
+
+            if (!shown.length && !options.offerTopLevel) {
+                select.appendChild(el('option', { value: '', text: term ? text.noMatches : text.noDestination }));
+
+                return;
+            }
+
+            shown.forEach(function (folder) {
+                select.appendChild(el('option', { value: String(folder.id), text: folder.label }));
+            });
+        };
 
         while (select.firstChild) {
             select.removeChild(select.firstChild);
@@ -723,83 +965,88 @@
         dialog.showModal();
 
         api('/manage/folders/flat').then(function (folders) {
-            // The cross-folder listing carries folder_id on each row; the
-            // per-folder one does not, because there the folder is the screen.
-            var current = Number(file.folder_id || state.folderId);
+            var usable = folders.filter(options.filter || function () { return true; });
 
-            var options = folders.filter(function (folder) {
-                return Number(folder.id) !== current;
-            });
+            state.moveOptions = usable;
+            fill(usable);
 
-            while (select.firstChild) {
-                select.removeChild(select.firstChild);
+            filter.oninput = function () { fill(usable); };
+            filter.focus();
+        });
+    }
+
+    function moveFile(file) {
+        // The cross-folder listing carries folder_id on each row; the
+        // per-folder one does not, because there the folder is the screen.
+        var current = Number(file.folder_id || state.folderId);
+
+        openMoveDialog({
+            title: text.moveFile,
+            subject: file.name,
+            offerTopLevel: false,
+            filter: function (folder) { return Number(folder.id) !== current; },
+            onPick: function (targetId) {
+                api('/manage/files/' + file.id + '/move', {
+                    method: 'POST',
+                    body: { folder_id: Number(targetId) }
+                })
+                    .then(function () {
+                        status(text.moved);
+                        reload();
+                    })
+                    .catch(function () {
+                        status(text.failed);
+                    });
             }
-
-            if (!options.length) {
-                select.appendChild(el('option', { value: '', text: text.noDestination }));
-
-                return;
-            }
-
-            options.forEach(function (folder) {
-                select.appendChild(el('option', { value: String(folder.id), text: folder.label }));
-            });
-
-            select.focus();
         });
     }
 
     /**
-     * Moving a folder reuses the same dialog, with the top level offered as a
-     * destination and the folder's own subtree removed from the list.
+     * Moving a folder offers the top level and hides the folder's own subtree.
      *
-     * The server refuses a move into a descendant anyway, since that would
-     * detach the branch from the tree. Filtering here as well means the editor
-     * never sees a choice that is going to be rejected.
+     * The server refuses a move into a descendant anyway, since that detaches
+     * the branch from the tree, but an editor should not be shown a choice
+     * that is going to be rejected.
      */
     function moveFolder(folderId) {
-        var dialog = document.getElementById('hilg-move-dialog');
-        var select = document.getElementById('hilg-move-target');
-
-        if (!dialog || !select || !folderId) {
+        if (!folderId) {
             return;
         }
 
-        state.moving = { folder: folderId };
-        document.getElementById('hilg-move-title').textContent = text.moveFolder;
-        document.getElementById('hilg-move-file').textContent =
-            (state.folders[folderId] && state.folders[folderId].name) || '';
-
-        while (select.firstChild) {
-            select.removeChild(select.firstChild);
-        }
-
-        select.appendChild(el('option', { value: '', text: text.loading }));
-        dialog.showModal();
+        var name = (state.folders[folderId] && state.folders[folderId].name) || '';
 
         api('/manage/folders/flat').then(function (folders) {
             var self = folders.filter(function (f) { return Number(f.id) === Number(folderId); })[0];
             var prefix = self ? self.label + ' / ' : null;
 
-            var options = folders.filter(function (f) {
-                if (Number(f.id) === Number(folderId)) {
-                    return false;
+            openMoveDialog({
+                title: text.moveFolder,
+                subject: name,
+                offerTopLevel: true,
+                filter: function (folder) {
+                    if (Number(folder.id) === Number(folderId)) {
+                        return false;
+                    }
+
+                    return !(prefix && folder.label.indexOf(prefix) === 0);
+                },
+                onPick: function (targetId) {
+                    api('/manage/folders/' + folderId + '/move', {
+                        method: 'POST',
+                        body: { parent_id: Number(targetId) || null }
+                    })
+                        .then(function () {
+                            status(text.moved);
+                            loadTree();
+                            reload();
+                        })
+                        .catch(function (error) {
+                            var payload = error && error.payload;
+
+                            status(payload && payload.error === 'cycle' ? text.cannotNest : text.failed);
+                        });
                 }
-
-                return !(prefix && f.label.indexOf(prefix) === 0);
             });
-
-            while (select.firstChild) {
-                select.removeChild(select.firstChild);
-            }
-
-            select.appendChild(el('option', { value: '0', text: text.topLevel }));
-
-            options.forEach(function (folder) {
-                select.appendChild(el('option', { value: String(folder.id), text: folder.label }));
-            });
-
-            select.focus();
         });
     }
 
@@ -807,41 +1054,15 @@
         var dialog = document.getElementById('hilg-move-dialog');
         var target = document.getElementById('hilg-move-target').value;
 
-        if (target === '' || !state.moving) {
+        if (target === '' || typeof state.movePick !== 'function') {
             return;
         }
 
-        var movingFolder = state.moving.folder !== undefined;
+        var pick = state.movePick;
 
-        var request = movingFolder
-            ? api('/manage/folders/' + state.moving.folder + '/move', {
-                method: 'POST',
-                body: { parent_id: Number(target) || null }
-            })
-            : api('/manage/files/' + state.moving.id + '/move', {
-                method: 'POST',
-                body: { folder_id: Number(target) }
-            });
-
-        request
-            .then(function () {
-                dialog.close();
-                state.moving = null;
-                status(text.moved);
-
-                // A moved folder changes the shape of the tree, so the sidebar
-                // is rebuilt. A moved file only changes one listing.
-                if (movingFolder) {
-                    loadTree();
-                }
-
-                selectFolder(state.folderId);
-            })
-            .catch(function (error) {
-                var payload = error && error.payload;
-
-                status(payload && payload.error === 'cycle' ? text.cannotNest : text.failed);
-            });
+        state.movePick = null;
+        dialog.close();
+        pick(target);
     }
 
     function deleteFile(file) {
@@ -1036,9 +1257,84 @@
         if (moveDialog) {
             document.getElementById('hilg-move-save').addEventListener('click', saveMove);
             document.getElementById('hilg-move-cancel').addEventListener('click', function () {
-                state.moving = null;
+                state.movePick = null;
                 moveDialog.close();
             });
+
+            // Double clicking an option is how people expect a picker to work.
+            document.getElementById('hilg-move-target').addEventListener('dblclick', saveMove);
+        }
+
+        var renameDialog = document.getElementById('hilg-rename-dialog');
+
+        if (renameDialog) {
+            document.getElementById('hilg-rename-save').addEventListener('click', saveRename);
+            document.getElementById('hilg-rename-cancel').addEventListener('click', function () {
+                state.renaming = null;
+                renameDialog.close();
+            });
+
+            document.getElementById('hilg-rename-form').addEventListener('submit', function (event) {
+                event.preventDefault();
+                saveRename();
+            });
+        }
+
+        var search = document.getElementById('hilg-search');
+
+        if (search) {
+            var timer = null;
+
+            search.addEventListener('input', function () {
+                window.clearTimeout(timer);
+
+                timer = window.setTimeout(function () {
+                    state.search = search.value.trim();
+                    // A new search starts at the first page. Staying on page
+                    // four of the old result set shows an empty table for a
+                    // search that found plenty.
+                    selectFolder(state.folderId, 1);
+                }, 300);
+            });
+        }
+
+        var sort = document.getElementById('hilg-sort');
+
+        if (sort) {
+            sort.addEventListener('change', function () {
+                state.sort = sort.value;
+                selectFolder(state.folderId, 1);
+            });
+        }
+
+        var selectAll = document.getElementById('hilg-select-all');
+
+        if (selectAll) {
+            selectAll.addEventListener('change', function () {
+                // Read once, before the loop starts.
+                //
+                // Each row's own handler redraws the bulk bar, and that redraw
+                // sets this checkbox from how many rows are currently ticked.
+                // Reading it inside the loop meant the first row flipped it to
+                // false and the remaining fifty nine were then unticked: "select
+                // all" selected exactly one.
+                var wanted = selectAll.checked;
+
+                document.querySelectorAll('.hilg-admin__row-check').forEach(function (box) {
+                    box.checked = wanted;
+                    box.dispatchEvent(new Event('change'));
+                });
+
+                selectAll.checked = wanted;
+            });
+        }
+
+        var bulkDeleteButton = document.getElementById('hilg-bulk-delete');
+
+        if (bulkDeleteButton) {
+            bulkDeleteButton.addEventListener('click', bulkDelete);
+            document.getElementById('hilg-bulk-move').addEventListener('click', bulkMove);
+            document.getElementById('hilg-bulk-clear').addEventListener('click', clearSelection);
         }
 
         document.getElementById('hilg-dialog-cancel').addEventListener('click', function () {

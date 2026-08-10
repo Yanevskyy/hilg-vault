@@ -116,6 +116,17 @@ final class AdminPage
             'moveFolder'    => __('Move folder', 'hilg-vault'),
             'topLevel'      => __('Top level', 'hilg-vault'),
             'cannotNest'    => __('A folder cannot be moved into itself or into one of its own sub folders.', 'hilg-vault'),
+            'renameFile'    => __('Rename file', 'hilg-vault'),
+            'moveSelected'  => __('Move selected files', 'hilg-vault'),
+            /* translators: %d: number of files selected. */
+            'selected'      => __('%d selected', 'hilg-vault'),
+            'confirmBulk'   => __('Delete the selected files? An administrator can put them back for 30 days.', 'hilg-vault'),
+            /* translators: %d: number of files moved. */
+            'movedCount'    => __('%d files moved', 'hilg-vault'),
+            /* translators: %d: number of files deleted. */
+            'deletedCount'  => __('%d files deleted', 'hilg-vault'),
+            'noMatches'     => __('No folders match', 'hilg-vault'),
+            'searching'     => __('Searching', 'hilg-vault'),
             'previous'      => __('Previous', 'hilg-vault'),
             'next'          => __('Next', 'hilg-vault'),
             /* translators: 1: current page, 2: total pages, 3: total files. */
@@ -217,6 +228,46 @@ final class AdminPage
                         <div class="hilg-admin__actions" id="hilg-actions"></div>
                     </header>
 
+                    <div class="hilg-admin__filters">
+                        <label class="screen-reader-text" for="hilg-search">
+                            <?php esc_html_e('Search files', 'hilg-vault'); ?>
+                        </label>
+                        <input type="search" id="hilg-search" class="hilg-admin__search"
+                               placeholder="<?php esc_attr_e('Search files', 'hilg-vault'); ?>" autocomplete="off">
+
+                        <label class="screen-reader-text" for="hilg-sort">
+                            <?php esc_html_e('Sort by', 'hilg-vault'); ?>
+                        </label>
+                        <select id="hilg-sort" class="hilg-admin__sort">
+                            <option value="name"><?php esc_html_e('Name', 'hilg-vault'); ?></option>
+                            <option value="newest"><?php esc_html_e('Newest first', 'hilg-vault'); ?></option>
+                            <option value="oldest"><?php esc_html_e('Oldest first', 'hilg-vault'); ?></option>
+                            <option value="size"><?php esc_html_e('Largest first', 'hilg-vault'); ?></option>
+                            <option value="type"><?php esc_html_e('File type', 'hilg-vault'); ?></option>
+                        </select>
+                    </div>
+
+                    <?php
+                    /*
+                     * The bulk bar appears only once something is selected.
+                     * A row of disabled buttons above an empty selection is
+                     * furniture: it takes space on every visit to serve the
+                     * occasional one.
+                     */
+                    ?>
+                    <div class="hilg-admin__bulk" id="hilg-bulk" hidden>
+                        <span class="hilg-admin__bulk-count" id="hilg-bulk-count"></span>
+                        <button type="button" class="button" id="hilg-bulk-move">
+                            <?php esc_html_e('Move selected', 'hilg-vault'); ?>
+                        </button>
+                        <button type="button" class="button hilg-admin__danger" id="hilg-bulk-delete">
+                            <?php esc_html_e('Delete selected', 'hilg-vault'); ?>
+                        </button>
+                        <button type="button" class="button-link" id="hilg-bulk-clear">
+                            <?php esc_html_e('Clear selection', 'hilg-vault'); ?>
+                        </button>
+                    </div>
+
                     <p class="hilg-admin__status" role="status" aria-live="polite" id="hilg-status"></p>
 
                     <div class="hilg-admin__dropzone" id="hilg-dropzone" hidden>
@@ -237,6 +288,12 @@ final class AdminPage
                     <table class="wp-list-table widefat fixed striped hilg-admin__files">
                         <thead>
                             <tr>
+                                <td class="hilg-admin__col-check">
+                                    <label class="screen-reader-text" for="hilg-select-all">
+                                        <?php esc_html_e('Select all files on this page', 'hilg-vault'); ?>
+                                    </label>
+                                    <input type="checkbox" id="hilg-select-all">
+                                </td>
                                 <th scope="col"><?php esc_html_e('Name', 'hilg-vault'); ?></th>
                                 <th scope="col" class="hilg-admin__col-folder" id="hilg-col-folder" hidden>
                                     <?php esc_html_e('Folder', 'hilg-vault'); ?>
@@ -325,6 +382,27 @@ final class AdminPage
          * that, and gets worse the larger the library becomes.
          */
         ?>
+        <dialog class="hilg-admin__dialog" id="hilg-rename-dialog" aria-labelledby="hilg-rename-title">
+            <form method="dialog" id="hilg-rename-form">
+                <h2 id="hilg-rename-title"><?php esc_html_e('Rename file', 'hilg-vault'); ?></h2>
+
+                <div class="hilg-admin__field">
+                    <label for="hilg-rename-input"><?php esc_html_e('File name', 'hilg-vault'); ?></label>
+                    <input type="text" id="hilg-rename-input" class="regular-text" required>
+                    <p class="description" id="hilg-rename-error" role="alert"></p>
+                </div>
+
+                <p class="hilg-admin__dialog-actions">
+                    <button type="button" class="button button-primary" id="hilg-rename-save">
+                        <?php esc_html_e('Save', 'hilg-vault'); ?>
+                    </button>
+                    <button type="button" class="button" id="hilg-rename-cancel">
+                        <?php esc_html_e('Cancel', 'hilg-vault'); ?>
+                    </button>
+                </p>
+            </form>
+        </dialog>
+
         <dialog class="hilg-admin__dialog" id="hilg-move-dialog" aria-labelledby="hilg-move-title">
             <form method="dialog" id="hilg-move-form">
                 <h2 id="hilg-move-title"><?php esc_html_e('Move file', 'hilg-vault'); ?></h2>
@@ -332,8 +410,14 @@ final class AdminPage
                 <p class="hilg-admin__moving" id="hilg-move-file"></p>
 
                 <div class="hilg-admin__field">
+                    <label for="hilg-move-filter"><?php esc_html_e('Find a folder', 'hilg-vault'); ?></label>
+                    <input type="search" id="hilg-move-filter" class="regular-text"
+                           placeholder="<?php esc_attr_e('Type to narrow the list', 'hilg-vault'); ?>" autocomplete="off">
+                </div>
+
+                <div class="hilg-admin__field">
                     <label for="hilg-move-target"><?php esc_html_e('Destination folder', 'hilg-vault'); ?></label>
-                    <select id="hilg-move-target" class="regular-text"></select>
+                    <select id="hilg-move-target" class="regular-text" size="8"></select>
                 </div>
 
                 <p class="hilg-admin__dialog-actions">
